@@ -37,6 +37,74 @@ def colorize_directives(text: str) -> str:
     return text
 
 
+def get_backup_dir(file_name: str) -> str:
+    backup_root = os.path.abspath("./temp_backups")
+    base_name, _ = os.path.splitext(file_name)
+    safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', base_name)
+    project_dir = os.path.join(backup_root, safe_name)
+    os.makedirs(project_dir, exist_ok=True)
+    return project_dir
+
+def get_backup_path(file_name: str) -> str:
+    project_dir = get_backup_dir(file_name)
+    return os.path.join(project_dir, "progress.json")
+
+def save_progress_backup():
+    if "file_name" not in st.session_state or not st.session_state.file_name or "chunks" not in st.session_state or not st.session_state.chunks:
+        return
+    backup_path = get_backup_path(st.session_state.file_name)
+    data = {
+        "file_name": st.session_state.file_name,
+        "original_chunks": st.session_state.chunks,
+        "translated_chunks": st.session_state.translated_chunks,
+    }
+    with open(backup_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_progress_backup(file_name: str) -> bool:
+    backup_path = get_backup_path(file_name)
+    if os.path.exists(backup_path):
+        try:
+            with open(backup_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # 청크 개수가 일치하는 경우에만 이전 번역 불러오기 진행
+            if len(data.get("original_chunks", [])) == len(st.session_state.chunks):
+                st.session_state.translated_chunks = data.get("translated_chunks", [])
+                
+                # 백업 폴더 내부의 이미지 디렉토리 조회 및 로드
+                project_dir = get_backup_dir(file_name)
+                images_dir = os.path.join(project_dir, "images")
+                if os.path.exists(images_dir):
+                    saved_images = [os.path.join(images_dir, f) for f in os.listdir(images_dir) if not f.startswith(".")]
+                    saved_images.sort()
+                    st.session_state.temp_image_paths = saved_images
+                else:
+                    st.session_state.temp_image_paths = []
+                return True
+        except Exception:
+            pass
+    return False
+
+def sync_chunks(chunk_size):
+    if not st.session_state.original_script.strip():
+        st.session_state.chunks = []
+        st.session_state.translated_chunks = []
+        return
+        
+    from core.translator import chunk_text, chunk_srt
+    is_srt = st.session_state.file_name.endswith(".srt")
+    if is_srt:
+        new_chunks = chunk_srt(st.session_state.original_script)
+    else:
+        new_chunks = chunk_text(st.session_state.original_script, chunk_size=chunk_size)
+        
+    if st.session_state.chunks != new_chunks:
+        st.session_state.chunks = new_chunks
+        st.session_state.translated_chunks = [""] * len(new_chunks)
+        # 로컬 백업이 존재하면 이어서 번역할 수 있도록 로드 시도
+        load_progress_backup(st.session_state.file_name)
+
+
 
 
 # Local models directory
@@ -131,6 +199,10 @@ if "script_summary" not in st.session_state:
         "situation": "대본 분석 전입니다.",
         "story": "대본 분석 전입니다."
     }
+if "chunks" not in st.session_state:
+    st.session_state.chunks = []
+if "translated_chunks" not in st.session_state:
+    st.session_state.translated_chunks = []
 
 
 # Lazy loading model
@@ -226,6 +298,9 @@ with st.sidebar:
     chunk_size = st.slider("청크 크기 (글자 수 기준)", 300, 1500, 800, step=50)
     translate_directives = st.checkbox("괄호 안 지시문 번역 ([whispering] -> [속삭임])", value=True)
 
+# Sync chunks with original script
+sync_chunks(chunk_size)
+
 # Tabs
 tab1, tab2, tab3, tab4 = st.tabs([
     "1. 대본 입력",
@@ -257,26 +332,28 @@ with tab1:
     )
     
     # 소개 이미지 저장 및 세션 스테이트 반영
-    temp_image_paths = []
     if uploaded_images:
-        temp_dir = os.path.abspath("./temp_images")
-        os.makedirs(temp_dir, exist_ok=True)
+        project_dir = get_backup_dir(st.session_state.file_name)
+        images_dir = os.path.join(project_dir, "images")
         # 이전 임시 이미지 삭제
-        for f in os.listdir(temp_dir):
-            try:
-                os.remove(os.path.join(temp_dir, f))
-            except Exception:
-                pass
+        if os.path.exists(images_dir):
+            for f in os.listdir(images_dir):
+                try:
+                    os.remove(os.path.join(images_dir, f))
+                except Exception:
+                    pass
+        os.makedirs(images_dir, exist_ok=True)
         
+        temp_image_paths = []
         for idx, img_file in enumerate(uploaded_images):
-            img_path = os.path.join(temp_dir, f"temp_img_{idx}_{img_file.name}")
+            img_path = os.path.join(images_dir, f"img_{idx}_{img_file.name}")
             with open(img_path, "wb") as f:
                 f.write(img_file.read())
             temp_image_paths.append(img_path)
             
         st.session_state.temp_image_paths = temp_image_paths
         
-        # 이미지 그리드(행당 최대 4개) 미리보기 레이아웃
+        # 이미지 미리보기 레이아웃
         st.markdown("**업로드된 소개 이미지 미리보기**")
         max_cols_per_row = 4
         num_images = len(uploaded_images)
@@ -285,8 +362,16 @@ with tab1:
             cols = st.columns(len(row_images))
             for idx, img_file in enumerate(row_images):
                 cols[idx].image(img_file, caption=img_file.name, use_container_width=True)
-    else:
-        st.session_state.temp_image_paths = []
+    elif st.session_state.temp_image_paths:
+        # 이미 백업 폴더에 저장되어 있는 이미지 표시
+        st.markdown("**불러온 백업 소개 이미지 미리보기**")
+        max_cols_per_row = 4
+        num_images = len(st.session_state.temp_image_paths)
+        for i in range(0, num_images, max_cols_per_row):
+            row_paths = st.session_state.temp_image_paths[i:i + max_cols_per_row]
+            cols = st.columns(len(row_paths))
+            for idx, img_path in enumerate(row_paths):
+                cols[idx].image(img_path, caption=os.path.basename(img_path), use_container_width=True)
     
     # PDF 줄바꿈 보정용 체크박스
     clean_pdf_breaks = st.checkbox(
@@ -466,14 +551,38 @@ with tab2:
 with tab3:
     st.header("대본 번역 실행 및 실시간 진행 상태")
     
-    # Actions
-    if st.button("번역 실행 (Translate)", type="primary", use_container_width=True):
+    total_chunks = len(st.session_state.chunks)
+    translated_count = sum(1 for c in st.session_state.translated_chunks if c.strip())
+    
+    if total_chunks > 0:
+        st.info(f"전체 {total_chunks}개 청크 중 {translated_count}개 청크의 번역이 완료(임시저장)되었습니다.")
+        
+    col_act1, col_act2 = st.columns(2)
+    with col_act1:
+        start_btn = st.button("번역 실행 / 이어서 번역", type="primary", use_container_width=True)
+    with col_act2:
+        reset_btn = st.button("번역 진행 상태 초기화", use_container_width=True)
+        
+    if reset_btn:
+        if total_chunks > 0:
+            st.session_state.translated_chunks = [""] * total_chunks
+            st.session_state.translated_script = ""
+            backup_path = get_backup_path(st.session_state.file_name)
+            if os.path.exists(backup_path):
+                try:
+                    os.remove(backup_path)
+                except Exception:
+                    pass
+            st.success("진행 상태가 초기화되었습니다.")
+            st.rerun()
+
+    if start_btn:
         if not st.session_state.model_loaded:
             st.error("먼저 사이드바에서 모델을 로드해주세요!")
         elif not st.session_state.original_script.strip():
             st.error("번역할 대본이 없습니다. '1. 대본 입력' 탭에서 대본을 추가해 주세요.")
         else:
-            from core.translator import translate_script, chunk_text, chunk_srt
+            from core.translator import translate_script, chunk_text, chunk_srt, clean_markdown
             from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
             import threading
             
@@ -508,13 +617,14 @@ with tab3:
             st.markdown("#### 지금까지 번역된 전체 텍스트")
             full_translated_box = st.empty()
             
-            # Split chunks to display preview correctly in callback
-            if is_srt:
-                chunks = chunk_srt(st.session_state.original_script)
-            else:
-                chunks = chunk_text(st.session_state.original_script, chunk_size=chunk_size)
-                
-            accumulated_translated_chunks = [""] * len(chunks)
+            chunks = st.session_state.chunks
+            
+            # Fill existing translation box
+            initial_full_text = "\n\n".join([c for c in st.session_state.translated_chunks if c])
+            full_translated_box.markdown(
+                f'<div style="border: 1px solid #31333f; padding: 20px; border-radius: 8px; background-color: #0e1117; color: #f0f2f6; white-space: pre-wrap; font-size: 14px; height: 400px; overflow-y: auto;">{colorize_directives(initial_full_text)}</div>',
+                unsafe_allow_html=True
+            )
             
             def update_progress(token_text, chunk_idx, total_chunks, current_chunk_translation):
                 # Update progress bar
@@ -523,18 +633,20 @@ with tab3:
                 
                 # Show current chunk original
                 orig_box.info(chunks[chunk_idx])
-                # 지시문 및 의성어/의태어에 색상 부여
+                
+                # Show streaming translation
                 colorized_chunk = colorize_directives(current_chunk_translation)
                 trans_box.markdown(
                     f'<div style="border: 1px solid #ff4b4b; padding: 15px; border-radius: 8px; background-color: #0e1117; color: #f0f2f6; white-space: pre-wrap; font-size: 15px;">{colorized_chunk}</div>',
                     unsafe_allow_html=True
                 )
                 
-                # Keep track of current translation
-                accumulated_translated_chunks[chunk_idx] = current_chunk_translation
+                # Keep track of current translation and auto-save
+                st.session_state.translated_chunks[chunk_idx] = clean_markdown(current_chunk_translation)
+                save_progress_backup()
                 
                 # Join all translated chunks and show colorized full text
-                full_text = "\n\n".join([c for c in accumulated_translated_chunks if c])
+                full_text = "\n\n".join([c for c in st.session_state.translated_chunks if c])
                 colorized_full = colorize_directives(full_text)
                 full_translated_box.markdown(
                     f'<div style="border: 1px solid #31333f; padding: 20px; border-radius: 8px; background-color: #0e1117; color: #f0f2f6; white-space: pre-wrap; font-size: 14px; height: 400px; overflow-y: auto;">{colorized_full}</div>',
@@ -542,7 +654,7 @@ with tab3:
                 )
                 
             try:
-                # 단일 스레드풀에서 번역 실행 (GPU 스트림 스레드 일치)
+                # 단일 스레드풀에서 번역 실행 (GPU 스트림 스레드 일치 + existing_translations 전달)
                 future = EXECUTOR.submit(
                     translate_with_context,
                     ctx,
@@ -556,6 +668,7 @@ with tab3:
                     chunk_size=chunk_size,
                     temp=temperature,
                     repetition_penalty=repetition_penalty,
+                    existing_translations=st.session_state.translated_chunks,
                     progress_callback=update_progress
                 )
                 final_translation = future.result()
@@ -567,6 +680,135 @@ with tab3:
                 import traceback
                 st.error(f"번역 중 오류 발생: {e}")
                 st.code(traceback.format_exc(), language="python")
+
+    # Add expander for chunk-by-chunk management
+    if total_chunks > 0:
+        st.divider()
+        with st.expander("개별 청크 상세 관리 및 부분 재번역", expanded=False):
+            st.caption("각 번역 조각의 원문과 번역을 대조/수정하고, 마음에 들지 않는 조각만 개별 재번역할 수 있습니다.")
+            is_srt = st.session_state.file_name.endswith(".srt")
+            
+            # Prepare glossary dict for re-translation
+            glossary_dict = {}
+            for item in st.session_state.glossary_data:
+                src = item.get("원어 (Source)", "")
+                tgt = item.get("번역어 (Target)", "")
+                if src and tgt:
+                    glossary_dict[str(src).strip()] = str(tgt).strip()
+            
+            for idx in range(total_chunks):
+                with st.container():
+                    col_c1, col_c2, col_c3 = st.columns([5, 5, 2])
+                    with col_c1:
+                        st.text_area(f"청크 {idx+1} 원문", st.session_state.chunks[idx], height=120, key=f"chunk_orig_{idx}", disabled=True)
+                    with col_c2:
+                        new_trans = st.text_area(f"청크 {idx+1} 번역", st.session_state.translated_chunks[idx], height=120, key=f"chunk_trans_{idx}")
+                        if new_trans != st.session_state.translated_chunks[idx]:
+                            st.session_state.translated_chunks[idx] = new_trans
+                            save_progress_backup()
+                            # Update full translation script text
+                            if is_srt:
+                                st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])
+                            else:
+                                st.session_state.translated_script = "\n".join([c for c in st.session_state.translated_chunks if c])
+                    with col_c3:
+                        st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
+                        has_translation = bool(st.session_state.translated_chunks[idx].strip())
+                        btn_label = "부분 재번역" if has_translation else "부분 번역"
+                        
+                        # Translate / Re-translate button
+                        if st.button(btn_label, key=f"retrans_btn_{idx}", use_container_width=True):
+                            if not st.session_state.model_loaded:
+                                st.error("모델 로드 필요!")
+                            else:
+                                with st.spinner(f"청크 {idx+1} {btn_label} 중..."):
+                                    try:
+                                        prev_orig = st.session_state.chunks[idx-1] if idx > 0 else ""
+                                        prev_trans = st.session_state.translated_chunks[idx-1] if idx > 0 else ""
+                                        
+                                        from core.translator import build_translation_prompt, build_retranslation_prompt, clean_markdown
+                                        from mlx_vlm import generate as mlx_generate
+                                        from mlx_vlm.prompt_utils import apply_chat_template
+                                        
+                                        # 번역 내용이 있으면 재번역 프롬프트, 없으면 일반 번역 프롬프트 사용
+                                        if has_translation:
+                                            prompt = build_retranslation_prompt(
+                                                current_chunk=st.session_state.chunks[idx],
+                                                existing_translation=st.session_state.translated_chunks[idx],
+                                                prev_original=prev_orig,
+                                                prev_translated=prev_trans,
+                                                persona=st.session_state.persona,
+                                                glossary=glossary_dict,
+                                                is_srt=is_srt,
+                                                translate_directives=translate_directives
+                                            )
+                                        else:
+                                            prompt = build_translation_prompt(
+                                                current_chunk=st.session_state.chunks[idx],
+                                                prev_original=prev_orig,
+                                                prev_translated=prev_trans,
+                                                persona=st.session_state.persona,
+                                                glossary=glossary_dict,
+                                                is_srt=is_srt,
+                                                translate_directives=translate_directives
+                                            )
+                                        
+                                        # 백그라운드 스레드에서 모델 및 프로세서에 안전하게 직접 접근하도록 인자로 전달
+                                        def retranslate_single_chunk_task(model, processor, prompt):
+                                            messages = [{"role": "user", "content": prompt}]
+                                            formatted_prompt = apply_chat_template(
+                                                processor,
+                                                model.config,
+                                                messages,
+                                                num_images=0,
+                                                num_audios=0
+                                            )
+                                            res = mlx_generate(
+                                                model,
+                                                processor,
+                                                prompt=formatted_prompt,
+                                                temp=temperature,
+                                                max_tokens=1500,
+                                                kv_bits=3.5,
+                                                kv_quant_scheme="turboquant",
+                                                repetition_penalty=repetition_penalty,
+                                                repetition_context_size=100
+                                            )
+                                            return clean_markdown(res.text)
+                                            
+                                        future = EXECUTOR.submit(
+                                            retranslate_single_chunk_task,
+                                            st.session_state.model,
+                                            st.session_state.processor,
+                                            prompt
+                                        )
+                                        new_translated_text = future.result()
+                                        
+                                        st.session_state.translated_chunks[idx] = new_translated_text
+                                        save_progress_backup()
+                                        
+                                        # Update full translation script text
+                                        if is_srt:
+                                            st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])
+                                        else:
+                                            st.session_state.translated_script = "\n".join([c for c in st.session_state.translated_chunks if c])
+                                            
+                                        st.success(f"청크 {idx+1} {btn_label} 성공!")
+                                        st.rerun()
+                                    except Exception as ex:
+                                        st.error(f"{btn_label} 중 오류: {ex}")
+                                        
+                        # Clear translation button (only if translation exists)
+                        if has_translation:
+                            if st.button("번역 지우기", key=f"clear_btn_{idx}", use_container_width=True):
+                                st.session_state.translated_chunks[idx] = ""
+                                save_progress_backup()
+                                if is_srt:
+                                    st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])
+                                else:
+                                    st.session_state.translated_script = "\n".join([c for c in st.session_state.translated_chunks if c])
+                                st.rerun()
+                st.divider()
 
 # Tab 4: Refine & Download
 with tab4:

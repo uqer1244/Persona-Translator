@@ -13,8 +13,8 @@ __pycache__/
 # Local Model Weights (대용량 파일 제외)
 models/
 
-# Temporary directories (임시 저장 이미지)
-temp_images/
+# Temporary/Backup directories (임시 저장 이미지 및 번역 진행 상황 백업)
+temp_backups/
 
 # OS specific files
 .DS_Store
