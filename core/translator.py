@@ -13,6 +13,59 @@ def extract_text_from_pdf(pdf_file) -> str:
             text_list.append(text)
     return "\n".join(text_list)
 
+def clean_pdf_linebreaks(text: str) -> str:
+    """
+    세로쓰기 또는 PDF 레이아웃 문제로 인해 잘게 쪼개진 줄바꿈을 문장 단위로 자동 병합합니다.
+    """
+    if not text:
+        return ""
+    
+    # 윈도우 스타일 개행문자 통일
+    text = text.replace("\r\n", "\n")
+    lines = [line.strip() for line in text.split("\n")]
+    result_lines = []
+    current_line = ""
+    
+    for line in lines:
+        if not line:
+            # 빈 줄은 단락 구분이므로 기존 모은 라인을 배출하고 빈 줄 유지
+            if current_line:
+                result_lines.append(current_line)
+                current_line = ""
+            result_lines.append("")
+            continue
+            
+        # 자막 타임라인이나 숫자로 시작하는 인덱스는 합치지 않고 개별 행으로 보존
+        if re.match(r'^\d+$', line) or re.search(r'\d{2}:\d{2}:\d{2}', line):
+            if current_line:
+                result_lines.append(current_line)
+                current_line = ""
+            result_lines.append(line)
+            continue
+            
+        if not current_line:
+            current_line = line
+        else:
+            # 이전 라인이 마침표(., 。, ? , !) 또는 괄호 닫기(」, 』, ), ], })로 끝나면 새로운 문장으로 보고 줄바꿈 유지
+            if re.search(r'[.!?。？！」』\)\}\]\*]$', current_line):
+                result_lines.append(current_line)
+                current_line = line
+            else:
+                # 한국어/일본어 문맥인 경우 공백 없이 합치고, 영어나 서양어 문맥이면 공백 하나를 두고 합칩니다.
+                has_asian = any('\u3000' <= char <= '\u9fff' or '\uac00' <= char <= '\ud7a3' for char in current_line + line)
+                if has_asian:
+                    current_line += line
+                else:
+                    current_line += " " + line
+                    
+    if current_line:
+        result_lines.append(current_line)
+        
+    # 빈 줄이 연속으로 3개 이상 나타나면 2개로 압축
+    final_text = "\n".join(result_lines)
+    final_text = re.sub(r'\n{3,}', '\n\n', final_text)
+    return final_text
+
 def chunk_text(text: str, chunk_size: int = 800) -> list[str]:
     """
     일반 텍스트를 문장이나 줄 단위가 깨지지 않게 단락별로 나눕니다.
@@ -153,6 +206,8 @@ def translate_script(
     is_srt: bool,
     translate_directives: bool,
     chunk_size: int = 800,
+    temp: float = 0.3,
+    repetition_penalty: float = 1.1,
     progress_callback=None
 ) -> str:
     """
@@ -195,15 +250,17 @@ def translate_script(
         
         chunk_translation = ""
         
-        # MLX VLM 스트리밍 생성
+        # MLX VLM 스트리밍 생성 (repetition_penalty 반영하여 루프 억제)
         generator = stream_generate(
             model,
             processor,
             prompt=formatted_prompt,
-            temp=0.3,
+            temp=temp,
             max_tokens=1500,
             kv_bits=3.5,
-            kv_quant_scheme="turboquant"
+            kv_quant_scheme="turboquant",
+            repetition_penalty=repetition_penalty,
+            repetition_context_size=100
         )
         
         for response in generator:

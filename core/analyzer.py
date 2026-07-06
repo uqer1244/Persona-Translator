@@ -65,7 +65,9 @@ ASMR 대본의 설명란 텍스트(메타데이터), 대본 초반부, 그리고
         temp=0.1,
         max_tokens=1200, # 요약 추가를 고려해 max_tokens 약간 상향
         kv_bits=3.5,
-        kv_quant_scheme="turboquant"
+        kv_quant_scheme="turboquant",
+        repetition_penalty=1.1,
+        repetition_context_size=100
     )
     response = response_obj.text
     

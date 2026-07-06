@@ -43,6 +43,8 @@ def refine_translation(model, processor, translated_text: str, persona: dict) ->
         temp=0.2,
         max_tokens=4000,
         kv_bits=3.5,
-        kv_quant_scheme="turboquant"
+        kv_quant_scheme="turboquant",
+        repetition_penalty=1.1,
+        repetition_context_size=100
     )
     return clean_markdown(refined_output_obj.text)

@@ -222,6 +222,7 @@ with st.sidebar:
     # Translation parameters
     st.header("하이퍼파라미터")
     temperature = st.slider("Temperature (창의성/자유도)", 0.1, 1.0, 0.3, step=0.1)
+    repetition_penalty = st.slider("Repetition Penalty (반복 억제력)", 1.0, 1.5, 1.1, step=0.05)
     chunk_size = st.slider("청크 크기 (글자 수 기준)", 300, 1500, 800, step=50)
     translate_directives = st.checkbox("괄호 안 지시문 번역 ([whispering] -> [속삭임])", value=True)
 
@@ -287,14 +288,23 @@ with tab1:
     else:
         st.session_state.temp_image_paths = []
     
+    # PDF 줄바꿈 보정용 체크박스
+    clean_pdf_breaks = st.checkbox(
+        "PDF 추출 시 줄바꿈 자동 보정", 
+        value=True, 
+        help="세로쓰기 등으로 인해 잘게 조각난 줄바꿈을 지능적으로 병합하여 번역 품질을 높입니다."
+    )
+    
     # Extract text from uploaded file
     if uploaded_file is not None:
         file_name = uploaded_file.name
         st.session_state.file_name = file_name
         
         if file_name.endswith(".pdf"):
-            from core.translator import extract_text_from_pdf
+            from core.translator import extract_text_from_pdf, clean_pdf_linebreaks
             extracted_text = extract_text_from_pdf(uploaded_file)
+            if clean_pdf_breaks:
+                extracted_text = clean_pdf_linebreaks(extracted_text)
             st.session_state.original_script = extracted_text
             st.success(f"PDF 파일에서 텍스트를 추출했습니다! ({len(extracted_text)} 자)")
         else:
@@ -318,6 +328,15 @@ with tab1:
         placeholder="번역할 대본 본문을 직접 붙여넣거나 파일을 업로드해 주세요.",
         height=350
     )
+    
+    # 수동 줄바꿈 정제 실행 버튼
+    if st.button("수동 줄바꿈 정제 실행", help="현재 본문 내의 과도한 줄바꿈을 문장 단위로 병합합니다. (세로쓰기 시나리오를 직접 붙여넣었을 때 유용합니다)"):
+        if st.session_state.original_script.strip():
+            from core.translator import clean_pdf_linebreaks
+            cleaned = clean_pdf_linebreaks(st.session_state.original_script)
+            st.session_state.original_script = cleaned
+            st.success("대본 본문의 줄바꿈 정제를 완료했습니다!")
+            st.rerun()
 
 # Tab 2: Persona and Glossary Setup
 with tab2:
@@ -535,6 +554,8 @@ with tab3:
                     is_srt=is_srt,
                     translate_directives=translate_directives,
                     chunk_size=chunk_size,
+                    temp=temperature,
+                    repetition_penalty=repetition_penalty,
                     progress_callback=update_progress
                 )
                 final_translation = future.result()
