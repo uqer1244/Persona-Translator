@@ -292,11 +292,13 @@ def translate_script(
     temp: float = 0.3,
     repetition_penalty: float = 1.1,
     existing_translations: list[str] = None,
+    cancel_token: dict = None,
     progress_callback=None
 ) -> str:
     """
     대본을 청크 단위로 분할하여 슬라이딩 윈도우 방식으로 번역을 진행하며 진행 상황을 콜백으로 호출합니다.
     이미 번역된 청크(existing_translations)는 건너뛰며 흐름을 이어갑니다.
+    중단 요청(cancel_token)이 감지되면 즉시 중지합니다.
     """
     # GPU 스트림 스레드 충돌 방지를 위해 함수 내부에서 로컬 임포트 수행
     from mlx_vlm.generate import stream_generate
@@ -314,6 +316,10 @@ def translate_script(
     prev_translated = ""
     
     for idx, chunk in enumerate(chunks):
+        # 중단 토큰 확인
+        if cancel_token and cancel_token.get("cancel"):
+            break
+
         # 이미 번역된 결과가 존재하는 청크는 LLM 호출을 건너뛰고 컨텍스트만 업데이트
         if existing_translations and idx < len(existing_translations) and existing_translations[idx].strip():
             chunk_translation_clean = existing_translations[idx]
@@ -321,8 +327,8 @@ def translate_script(
             prev_original = chunk
             prev_translated = chunk_translation_clean
             if progress_callback:
-                # UI 갱신을 위해 콜백 전달 (스트리밍은 없으므로 빈 문자)
-                progress_callback("", idx, total_chunks, chunk_translation_clean)
+                # UI 갱신을 위해 콜백 전달 (이미 번역 완료됨 표시)
+                progress_callback("", idx, total_chunks, chunk_translation_clean, True)
             continue
 
         prompt = build_translation_prompt(
@@ -346,7 +352,7 @@ def translate_script(
         
         chunk_translation = ""
         
-        # MLX VLM 스트리밍 생성 (repetition_penalty 반영하여 루프 억제)
+        # MLX VLM 스트리밍 생성
         generator = stream_generate(
             model,
             processor,
@@ -359,17 +365,27 @@ def translate_script(
             repetition_context_size=100
         )
         
+        aborted = False
         for response in generator:
+            if cancel_token and cancel_token.get("cancel"):
+                aborted = True
+                break
             token_text = response.text
             chunk_translation += token_text
             if progress_callback:
-                progress_callback(token_text, idx, total_chunks, chunk_translation)
+                progress_callback(token_text, idx, total_chunks, chunk_translation, False)
                 
+        if aborted:
+            break
+            
         chunk_translation_clean = clean_markdown(chunk_translation)
         translated_chunks.append(chunk_translation_clean)
         
         prev_original = chunk
         prev_translated = chunk_translation_clean
+        
+        if progress_callback:
+            progress_callback("", idx, total_chunks, chunk_translation_clean, True)
         
         # GPU 메모리 캐시 비우기 및 가비지 컬렉션 실행 (OOM 방지)
         import mlx.core as mx
