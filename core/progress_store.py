@@ -5,10 +5,49 @@ import re
 
 
 BACKUP_ROOT = os.path.abspath("./temp_backups")
+
+def extract_rj_code(text: str) -> str | None:
+    if not text:
+        return None
+    match = re.search(r'\b(RJ|rj)\d{6,8}\b', text)
+    if match:
+        return match.group(0).upper()
+    return None
+
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def safe_project_name(file_name: str) -> str:
+    # 1. First check if file_name contains RJ code (highly preferred for background threads)
+    rj = extract_rj_code(file_name)
+    if rj:
+        return rj
+
+    # 2. Check if user manually entered rj_code in session state (catch BaseException for thread safety)
+    try:
+        import streamlit as st
+        if "rj_code" in st.session_state and st.session_state.rj_code.strip():
+            rj = extract_rj_code(st.session_state.rj_code)
+            if rj:
+                return rj
+    except BaseException:
+        pass
+
+    # 3. Check if script content or metadata has RJ code
+    try:
+        import streamlit as st
+        if "original_script" in st.session_state and st.session_state.original_script:
+            rj = extract_rj_code(st.session_state.original_script)
+            if rj:
+                return rj
+        if "metadata_text" in st.session_state and st.session_state.metadata_text:
+            rj = extract_rj_code(st.session_state.metadata_text)
+            if rj:
+                return rj
+    except BaseException:
+        pass
+
+    # 4. Fallback to filename sanitization
     base_name, _ = os.path.splitext(file_name or "script.txt")
     return re.sub(r"[^a-zA-Z0-9_\-]", "_", base_name)
 
@@ -165,3 +204,66 @@ def load_persona_by_project_name(project_name: str) -> dict | None:
         except Exception:
             pass
     return None
+
+
+MASTER_GLOSSARY_PATH = os.path.abspath("./master_glossary.json")
+
+def load_master_glossary() -> list[dict]:
+    if not os.path.exists(MASTER_GLOSSARY_PATH):
+        return []
+    try:
+        with open(MASTER_GLOSSARY_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                # Ensure all items have the required columns
+                normalized = []
+                for item in data:
+                    src = item.get("원어 (Source)") or item.get("source") or ""
+                    tgt = item.get("번역어 (Target)") or item.get("target") or ""
+                    ctx = item.get("설명/뉘앙스 (Context)") or item.get("context") or item.get("설명") or ""
+                    if src.strip():
+                        normalized.append({
+                            "원어 (Source)": src.strip(),
+                            "번역어 (Target)": tgt.strip(),
+                            "설명/뉘앙스 (Context)": ctx.strip()
+                        })
+                return normalized
+    except Exception:
+        pass
+    return []
+
+def save_master_glossary(glossary_list: list[dict]):
+    normalized = []
+    for item in glossary_list:
+        src = str(item.get("원어 (Source)", "")).strip()
+        tgt = str(item.get("번역어 (Target)", "")).strip()
+        ctx = str(item.get("설명/뉘앙스 (Context)", "")).strip()
+        if src:
+            normalized.append({
+                "원어 (Source)": src,
+                "번역어 (Target)": tgt,
+                "설명/뉘앙스 (Context)": ctx
+            })
+    sorted_list = sorted(normalized, key=lambda x: x["원어 (Source)"].lower())
+    with open(MASTER_GLOSSARY_PATH, "w", encoding="utf-8") as f:
+        json.dump(sorted_list, f, ensure_ascii=False, indent=2)
+
+def merge_glossaries(master: list[dict], project: list[dict]) -> list[dict]:
+    master_dict = {str(item.get("원어 (Source)", "")).strip(): item for item in master if item.get("원어 (Source)")}
+    for item in project:
+        src = str(item.get("원어 (Source)", "")).strip() or str(item.get("원어 (영문/일문 등)", "")).strip()
+        tgt = str(item.get("번역어 (Target)", "")).strip() or str(item.get("고정 번역어 (한글)", "")).strip()
+        if not src or not tgt:
+            continue
+        desc = str(item.get("설명/뉘앙스 (Context)", "")).strip()
+        if src in master_dict:
+            master_dict[src]["번역어 (Target)"] = tgt
+            if desc:
+                master_dict[src]["설명/뉘앙스 (Context)"] = desc
+        else:
+            master_dict[src] = {
+                "원어 (Source)": src,
+                "번역어 (Target)": tgt,
+                "설명/뉘앙스 (Context)": desc
+            }
+    return list(master_dict.values())

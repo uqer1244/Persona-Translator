@@ -146,19 +146,34 @@ ASMR 작품 소개 이미지 1장을 분석해 주세요.
     return "\n\n".join(notes)
 
 
-def analyze_persona(model, processor, metadata_text: str, script_preview: str, image_paths: list[str] = None) -> dict:
+def analyze_persona(model, processor, metadata_text: str, script_preview: str, image_paths: list[str] = None, master_glossary: list = None) -> dict:
     """
     메타데이터, 대본 일부, 소개 이미지 분석 노트를 기반으로 페르소나와 용어집만 반환합니다.
-    대본 요약은 analyze_script_summary에서 별도 실행합니다.
+    기존 마스터 단어장에 기입된 단어들을 제외하고 새로운 단어들만 골라내는 점진적(Incremental) 추출을 지원합니다.
     """
     image_notes = analyze_images(model, processor, image_paths)
     image_section = f"\n[소개 이미지 분석 노트]\n{image_notes}\n" if image_notes else ""
+
+    master_section = ""
+    if master_glossary:
+        import json
+        master_json_str = json.dumps(master_glossary, ensure_ascii=False, indent=2)
+        master_section = f"""
+[기존 단어장 (Master Glossary)]
+기존에 구축해놓은 단어장 목록입니다:
+{master_json_str}
+
+[점진적 추출 규칙]
+- 위 기존 단어장에 이미 정의되어 있는 '원어 (Source)' 단어는 결과의 'glossary' 목록에서 제외해 주십시오. (중복 추출 방지)
+- 기존 단어장 목록에 존재하지 않는 이번 대본에 새로 등장하는 '새로운 고유 용어', '호칭', '상황 맥락적 중요 뉘앙스 표현'들만 찾아내어 'glossary'에 추가해 주십시오.
+- 단, 기존 단어장에 이미 있더라도 이번 대본에서 완전히 다른 새로운 뉘앙스나 한국어 번역 옵션으로 매칭되어야 하는 단어라면 설명과 함께 포함해도 좋습니다.
+"""
 
     prompt = f"""
 ASMR 대본의 설명란 텍스트(메타데이터), 대본 본문 일부, 소개 이미지 분석 노트를 종합하여 상황극 번역에 필요한 캐릭터 페르소나 정보와 주요 고유 명사/호칭 용어집만 추출해주세요.
 대본 전체 요약은 작성하지 마세요.
 결과는 반드시 아래의 JSON 형식으로만 작성해야 하며, 다른 설명이나 인삿말은 생략하세요.
-
+{master_section}
 [JSON 형식]
 {{
   "tone": "캐릭터의 말투와 어조 (예: 부드러운 반말, 끝처리를 흐리는 말투, 독점욕 있는 어조 등)",

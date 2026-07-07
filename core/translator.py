@@ -435,7 +435,7 @@ def translate_script(
             break
 
         # 이미 번역된 결과가 존재하는 청크는 LLM 호출을 건너뛰고 컨텍스트만 업데이트
-        if existing_translations and idx < len(existing_translations) and existing_translations[idx].strip():
+        if existing_translations and idx < len(existing_translations) and isinstance(existing_translations[idx], str) and existing_translations[idx].strip():
             chunk_translation_clean = existing_translations[idx]
             translated_chunks.append(chunk_translation_clean)
             prev_original = chunk

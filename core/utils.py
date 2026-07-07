@@ -175,7 +175,8 @@ def load_progress_backup(file_name: str) -> bool:
         if data:
             # 청크 개수가 일치하는 경우에만 이전 번역 불러오기 진행
             if len(data.get("original_chunks", [])) == len(st.session_state.chunks):
-                st.session_state.translated_chunks = data.get("translated_chunks", [])
+                raw_trans = data.get("translated_chunks", [])
+                st.session_state.translated_chunks = [c if isinstance(c, str) else "" for c in raw_trans]
                 
                 # 백업 데이터 불러올 때 각 청크별 위젯 세션 상태와 전체 번역본 동기화
                 is_srt = file_name.endswith(".srt")
