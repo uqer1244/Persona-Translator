@@ -88,3 +88,8 @@ streamlit run app.py
 - **Core Engine**: `mlx-vlm` (Gemma 4 Unified VLM 아키텍처 연동)
 - **Framework**: `Streamlit` (UI 및 백엔드 스레딩 구성)
 - **Libraries**: `pypdf`, `pandas`, `transformers`, `huggingface_hub`
+
+---
+
+## 라이선스
+이 프로젝트는 **MIT License**에 따라 라이선스가 부여됩니다. 자세한 내용은 [LICENSE](LICENSE) 파일을 참고해 주세요.
