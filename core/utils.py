@@ -3,6 +3,8 @@ import re
 import atexit
 import streamlit as st
 from core.progress_store import (
+    load_persona_backup,
+    save_persona_backup,
     get_backup_dir,
     get_backup_path,
     list_saved_images,
@@ -20,6 +22,42 @@ def get_executor():
     return ThreadPoolExecutor(max_workers=1)
 
 EXECUTOR = get_executor()
+
+
+def has_repetition(text: str) -> bool:
+    """
+    체크할 텍스트 뒷부분에서 중복되는 패턴이 연속으로 발생하는지 감지합니다.
+    """
+    if len(text) < 15:
+        return False
+        
+    # 최근 200자만 검사
+    text_to_check = text[-200:]
+    
+    # 1. 단어/구절 단위 반복 감지 (예: "밑에 눈 밑에 눈 밑에 눈")
+    # 짧은 길이(2자)부터 긴 길이(40자)까지 패턴 매칭
+    for pattern_len in range(2, 40):
+        if len(text_to_check) < pattern_len * 4:
+            continue
+        pattern = text_to_check[-pattern_len:]
+        
+        # 공백이나 문장부호로만 이루어진 패턴은 감지에서 제외
+        if not pattern.strip() or all(c in " .,!?\n*()[]_-" for c in pattern):
+            continue
+            
+        # 짧은 패턴(4자 미만)은 4번 이상 반복될 때, 긴 패턴은 3번 이상 반복될 때 루프로 판단
+        required_repeats = 4 if pattern_len < 5 else 3
+        if text_to_check.endswith(pattern * required_repeats):
+            return True
+            
+    # 2. 개별 문자 반복 감지 (예: "눈눈눈눈눈눈눈눈")
+    if len(text_to_check) >= 8:
+        last_char = text_to_check[-1]
+        if last_char not in (" ", "\n", ".", "-", "*", "~", ","):
+            if text_to_check[-8:] == last_char * 8:
+                return True
+                
+    return False
 
 
 def _clear_mlx_runtime():
@@ -150,6 +188,15 @@ def load_progress_backup(file_name: str) -> bool:
                     st.session_state[f"chunk_trans_{idx}"] = val
                 
                 st.session_state.temp_image_paths = list_saved_images(file_name)
+                
+                # 페르소나 및 용어집 개별 백업 로드
+                p_data = load_persona_backup(file_name)
+                if p_data:
+                    if "persona" in p_data and p_data["persona"]:
+                        st.session_state.persona = p_data["persona"]
+                    if "glossary_data" in p_data and p_data["glossary_data"]:
+                        st.session_state.glossary_data = p_data["glossary_data"]
+                        
                 return True
     except Exception:
         pass

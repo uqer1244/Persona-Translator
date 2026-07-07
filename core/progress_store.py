@@ -117,3 +117,51 @@ def save_chunk_summary(file_name: str, chunk_idx: int, chunk_text: str, summary:
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     return summary_path
+
+def get_persona_backup_path(file_name: str) -> str:
+    return os.path.join(get_backup_dir(file_name), "persona.json")
+
+
+def save_persona_backup(file_name: str, persona: dict, glossary: list):
+    path = get_persona_backup_path(file_name)
+    data = {
+        "persona": persona,
+        "glossary_data": glossary
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_persona_backup(file_name: str) -> dict | None:
+    path = get_persona_backup_path(file_name)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+
+def list_saved_personas() -> list[str]:
+    if not os.path.exists(BACKUP_ROOT):
+        return []
+    projects = []
+    for d in os.listdir(BACKUP_ROOT):
+        dir_path = os.path.join(BACKUP_ROOT, d)
+        if os.path.isdir(dir_path):
+            if os.path.exists(os.path.join(dir_path, "persona.json")):
+                projects.append(d)
+    projects.sort()
+    return projects
+
+
+def load_persona_by_project_name(project_name: str) -> dict | None:
+    path = os.path.join(BACKUP_ROOT, project_name, "persona.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None

@@ -18,6 +18,20 @@ from core.progress_store import save_progress
 from core.progress_store import get_image_note_path, load_image_note
 
 
+def clear_chunk_callback(idx):
+    if "translated_chunks" in st.session_state and idx < len(st.session_state.translated_chunks):
+        st.session_state.translated_chunks[idx] = ""
+        st.session_state[f"chunk_trans_{idx}"] = ""
+        save_progress(
+            st.session_state.file_name,
+            st.session_state.chunks,
+            st.session_state.translated_chunks,
+        )
+        is_srt = st.session_state.file_name.endswith(".srt")
+        if is_srt:
+            st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])
+        else:
+            st.session_state.translated_script = "\n".join([c for c in st.session_state.translated_chunks if c])
 
 
 # Local models directory
@@ -91,6 +105,7 @@ if "persona" not in st.session_state:
     st.session_state.persona = {
         "tone": "",
         "relationship": "",
+        "situation": "",
         "key_rules": []
     }
 if "original_script" not in st.session_state:
@@ -112,6 +127,8 @@ if "script_summary" not in st.session_state:
         "situation": "대본 분석 전입니다.",
         "story": "대본 분석 전입니다."
     }
+if "image_generation_prompt" not in st.session_state:
+    st.session_state.image_generation_prompt = ""
 if "chunks" not in st.session_state:
     st.session_state.chunks = []
 if "translated_chunks" not in st.session_state:
@@ -232,7 +249,7 @@ with tab1:
     )
     
     # File Uploader
-    uploaded_file = st.file_uploader("대본 파일 업로드 (.txt, .srt, .pdf)", type=["txt", "srt", "pdf"])
+    uploaded_files = st.file_uploader("대본 파일 업로드 (.txt, .srt, .pdf)", type=["txt", "srt", "pdf"], accept_multiple_files=True)
     
     # Image Uploader
     uploaded_images = st.file_uploader(
@@ -298,32 +315,56 @@ with tab1:
     )
     
     # Extract text from uploaded file
-    if uploaded_file is not None:
-        file_name = uploaded_file.name
-        st.session_state.file_name = file_name
-        
-        if file_name.endswith(".pdf"):
-            from core.translator import extract_text_from_pdf, clean_pdf_linebreaks
-            extracted_text = extract_text_from_pdf(uploaded_file)
-            if clean_pdf_breaks:
-                extracted_text = clean_pdf_linebreaks(extracted_text)
-            st.session_state.original_script = extracted_text
-            st.success(f"PDF 파일에서 텍스트를 추출했습니다! ({len(extracted_text)} 자)")
-        else:
-            # txt or srt
-            raw_data = uploaded_file.read()
-            # Try decoding with utf-8, fallback to cp949 or unicode_escape
-            try:
-                extracted_text = raw_data.decode("utf-8")
-            except UnicodeDecodeError:
-                try:
-                    extracted_text = raw_data.decode("cp949")
-                except UnicodeDecodeError:
-                    extracted_text = raw_data.decode("latin1")
-            st.session_state.original_script = extracted_text
-            st.success(f"자막/대본 파일 업로드 완료! ({len(extracted_text)} 자)")
-            
-    # Text input area
+    if uploaded_files:
+        if st.button("업로드된 대본 파일 파싱 및 불러오기", type="primary", use_container_width=True):
+            import re
+            sorted_files = sorted(uploaded_files, key=lambda f: f.name)
+            combined_text = []
+            srt_count = sum(1 for f in sorted_files if f.name.endswith('.srt'))
+            is_srt_mode = srt_count == len(sorted_files)
+
+            for idx, file in enumerate(sorted_files):
+                file_name = file.name
+                if file_name.endswith('.pdf'):
+                    from core.translator import extract_text_from_pdf, clean_pdf_linebreaks
+                    extracted_text = extract_text_from_pdf(file)
+                    if clean_pdf_breaks:
+                        extracted_text = clean_pdf_linebreaks(extracted_text)
+                else:
+                    raw_data = file.read()
+                    try:
+                        extracted_text = raw_data.decode('utf-8')
+                    except UnicodeDecodeError:
+                        try:
+                            extracted_text = raw_data.decode('cp949')
+                        except UnicodeDecodeError:
+                            extracted_text = raw_data.decode('latin1')
+
+                # 여러 대본을 합칠 때 경계 마크 추가
+                if len(sorted_files) > 1:
+                    if is_srt_mode:
+                        combined_text.append(extracted_text.strip())
+                    else:
+                        track_name = f'Track {idx + 1}'
+                        num_match = re.search(r'\d+', file_name)
+                        if num_match:
+                            track_name = f'Track {num_match.group(0)}'
+                        combined_text.append(f'[{track_name} ({file_name})]\n{extracted_text.strip()}')
+                else:
+                    combined_text.append(extracted_text.strip())
+
+            sep = '\n\n' if is_srt_mode else '\n\n\n'
+            st.session_state.original_script = sep.join(combined_text)
+
+            if len(sorted_files) == 1:
+                st.session_state.file_name = sorted_files[0].name
+            else:
+                first_name, _ = os.path.splitext(sorted_files[0].name)
+                st.session_state.file_name = f'{first_name}_외_{len(sorted_files)-1}개' + ('.srt' if is_srt_mode else '.txt')
+
+            st.success(f'총 {len(sorted_files)}개 대본 파일에서 텍스트를 추출하고 병합했습니다! ({len(st.session_state.original_script)} 자)')
+            st.rerun()
+
     st.session_state.original_script = st.text_area(
         "대본 원문 내용",
         value=st.session_state.original_script,
@@ -361,7 +402,7 @@ with tab2:
                 script_preview = extract_script_structure(
                     st.session_state.original_script,
                     file_name=st.session_state.file_name,
-                    max_total_chars=7000
+                    max_total_chars=3000
                 )
                 with st.spinner("AI가 대본과 메타데이터를 분석하여 페르소나를 도출 중입니다..."):
                     try:
@@ -377,6 +418,7 @@ with tab2:
                         st.session_state.persona = {
                             "tone": extracted_persona.get("tone", ""),
                             "relationship": extracted_persona.get("relationship", ""),
+                            "situation": extracted_persona.get("situation", ""),
                             "key_rules": extracted_persona.get("key_rules", [])
                         }
 
@@ -397,44 +439,7 @@ with tab2:
                         st.error(f"분석 중 오류 발생: {e}")
                         st.code(traceback.format_exc(), language="python")
 
-        if st.button("대본 상황 및 스토리 요약 생성", use_container_width=True):
-            if not st.session_state.model_loaded:
-                st.error("먼저 사이드바에서 모델을 로드해주세요!")
-            elif not st.session_state.original_script and not st.session_state.metadata_text:
-                st.error("요약 생성을 위해 대본 원문이나 메타데이터를 입력해 주세요.")
-            else:
-                from core.analyzer import analyze_script_summary
-                script_preview = extract_script_structure(
-                    st.session_state.original_script,
-                    file_name=st.session_state.file_name,
-                    max_total_chars=12000
-                )
-                with st.spinner("AI가 대본 구조와 소개 이미지를 분석하여 요약을 생성 중입니다..."):
-                    try:
-                        future = EXECUTOR.submit(
-                            analyze_script_summary,
-                            st.session_state.model,
-                            st.session_state.processor,
-                            st.session_state.metadata_text,
-                            script_preview,
-                            st.session_state.temp_image_paths,
-                            st.session_state.file_name,
-                            list(st.session_state.chunks)
-                        )
-                        summary = future.result()
-                        st.session_state.script_summary = {
-                            "speaker_name": summary.get("speaker_name", "미분석"),
-                            "listener_role": summary.get("listener_role", "미분석"),
-                            "situation": summary.get("situation", "미분석"),
-                            "story": summary.get("story", "미분석")
-                        }
-                        st.success("대본 상황 및 스토리 요약 생성 완료!")
-                        st.rerun()
-                    except Exception as e:
-                        import traceback
-                        st.error(f"요약 생성 중 오류 발생: {e}")
-                        st.code(traceback.format_exc(), language="python")
-                        
+
         # Editable inputs
         st.session_state.persona["tone"] = st.text_input(
             "어조 및 말투", 
@@ -443,6 +448,11 @@ with tab2:
         st.session_state.persona["relationship"] = st.text_input(
             "화자-청자 관계", 
             value=st.session_state.persona.get("relationship", "")
+        )
+        st.session_state.persona["situation"] = st.text_area(
+            "배경 상황 및 스토리 맥락 요약", 
+            value=st.session_state.persona.get("situation", ""),
+            height=60
         )
         
         # Key rules text area
@@ -492,27 +502,50 @@ with tab2:
                     if note:
                         st.markdown(note)
                     else:
-                        st.info("아직 이미지 분석 결과가 없습니다. 페르소나 또는 요약 생성 버튼을 누르면 자동으로 생성됩니다.")
+                        st.info("아직 이미지 분석 결과가 없습니다. 페르소나 생성 버튼을 누르면 자동으로 생성됩니다.")
     else:
         st.info("업로드되었거나 백업에서 불러온 소개 이미지가 없습니다.")
 
+
+
+    # 8. 저장된 다른 페르소나 설정 불러오기 및 현재 설정 자동저장
     st.divider()
-    st.subheader("대본 상황 및 스토리 요약")
-    st.caption("대본 분석을 통해 자동으로 도출된 주인공 설정, 배경 상황 및 대략적인 스토리 흐름입니다.")
+    st.subheader("💾 페르소나 설정 저장 및 라이브러리")
+    st.caption("이전 프로젝트에서 도출했던 페르소나 설정을 불러와 현재 대본 번역에 재사용할 수 있습니다.")
     
-    sum_data = st.session_state.script_summary
+    from core.progress_store import list_saved_personas, load_persona_by_project_name, save_persona_backup
     
-    col_sum1, col_sum2 = st.columns(2)
-    with col_sum1:
-        st.info(f"**화자 (주인공 이름/칭호)**\n\n{sum_data.get('speaker_name', '미분석')}")
-    with col_sum2:
-        st.success(f"**청자 (상대방 역할/칭호)**\n\n{sum_data.get('listener_role', '미분석')}")
-        
-    st.markdown("##### 배경 상황 및 설정 요약")
-    st.write(sum_data.get("situation", "대본 분석 전입니다."))
+    saved_projects = list_saved_personas()
+    col_lib1, col_lib2 = st.columns([3, 1])
     
-    st.markdown("##### 전체 줄거리 흐름")
-    st.write(sum_data.get("story", "대본 분석 전입니다."))
+    with col_lib1:
+        selected_proj = st.selectbox(
+            "저장된 페르소나 라이브러리 선택",
+            options=["선택 안 함"] + saved_projects,
+            index=0,
+            help="기존에 작업했던 프로젝트 폴더에서 페르소나 정보를 가져옵니다."
+        )
+    with col_lib2:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        if st.button("설정 불러오기", use_container_width=True, disabled=(selected_proj == "선택 안 함")):
+            p_data = load_persona_by_project_name(selected_proj)
+            if p_data:
+                if "persona" in p_data and p_data["persona"]:
+                    st.session_state.persona = p_data["persona"]
+                if "glossary_data" in p_data and p_data["glossary_data"]:
+                    st.session_state.glossary_data = p_data["glossary_data"]
+                st.success(f"'{selected_proj}' 프로젝트의 페르소나 설정을 성공적으로 적용했습니다!")
+                st.rerun()
+            else:
+                st.error("설정을 불러오는데 실패했습니다.")
+
+    # 실시간 데이터 자동 저장 (Autosave)
+    if st.session_state.original_script.strip() and st.session_state.file_name:
+        save_persona_backup(
+            st.session_state.file_name,
+            st.session_state.persona,
+            st.session_state.glossary_data
+        )
 
 # Tab 3: Translate and Stream View
 with tab3:
@@ -524,10 +557,12 @@ with tab3:
     # 1. 스레드 동기화 (백그라운드에서 완료된 번역이 있다면 메인 세션에 커밋)
     new_saved = False
     for idx, trans_text in list(LIVE_STATUS.completed_translations.items()):
-        if idx < len(st.session_state.translated_chunks) and st.session_state.translated_chunks[idx] != trans_text:
+        if idx < len(st.session_state.translated_chunks):
             st.session_state.translated_chunks[idx] = trans_text
             st.session_state[f"chunk_trans_{idx}"] = trans_text
             new_saved = True
+            if idx in LIVE_STATUS.completed_translations:
+                del LIVE_STATUS.completed_translations[idx]
     if new_saved:
         save_progress_backup()
         is_srt = st.session_state.file_name.endswith(".srt")
@@ -538,7 +573,7 @@ with tab3:
         
     new_single_saved = False
     for idx, trans_text in list(LIVE_STATUS.single_completed_translations.items()):
-        if idx < len(st.session_state.translated_chunks) and st.session_state.translated_chunks[idx] != trans_text:
+        if idx < len(st.session_state.translated_chunks):
             st.session_state.translated_chunks[idx] = trans_text
             st.session_state[f"chunk_trans_{idx}"] = trans_text
             new_single_saved = True
@@ -547,6 +582,8 @@ with tab3:
                 st.session_state.single_futures[idx] = None
             if idx in LIVE_STATUS.single_streaming_text:
                 del LIVE_STATUS.single_streaming_text[idx]
+            if idx in LIVE_STATUS.single_completed_translations:
+                del LIVE_STATUS.single_completed_translations[idx]
     if new_single_saved:
         save_progress_backup()
         is_srt = st.session_state.file_name.endswith(".srt")
@@ -555,7 +592,30 @@ with tab3:
         else:
             st.session_state.translated_script = "\n".join([c for c in st.session_state.translated_chunks if c])
 
-    # 2. 번역 실행 상태 점검
+    # 2. 번역 실행 상태 점검 및 에러 처리
+    if st.session_state.batch_future is not None and st.session_state.batch_future.done():
+        try:
+            exc = st.session_state.batch_future.exception()
+            if exc:
+                st.error(f"일괄 번역 중 오류가 발생했습니다: {exc}")
+        except Exception:
+            pass
+        st.session_state.batch_future = None
+        LIVE_STATUS.current_chunk_idx = -1
+        LIVE_STATUS.current_streaming_text = ""
+
+    for idx, f in list(st.session_state.single_futures.items()):
+        if f is not None and f.done():
+            try:
+                exc = f.exception()
+                if exc:
+                    st.error(f"청크 {idx+1} 번역 중 오류가 발생했습니다: {exc}")
+            except Exception:
+                pass
+            st.session_state.single_futures[idx] = None
+            if idx in LIVE_STATUS.single_streaming_text:
+                del LIVE_STATUS.single_streaming_text[idx]
+
     is_batch_running = st.session_state.batch_future is not None and not st.session_state.batch_future.done()
     is_single_running = any(f is not None and not f.done() for f in st.session_state.single_futures.values())
 
@@ -663,8 +723,6 @@ with tab3:
                         from core.translator import clean_markdown
                         clean_txt = clean_markdown(current_chunk_translation)
                         LIVE_STATUS.completed_translations[chunk_idx] = clean_txt
-                        
-                        # 백그라운드 스레드에서 직접 파일에 번역 결과 즉각 저장 (실시간 디스크 백업 보장)
                         try:
                             translated_chunks_snapshot[chunk_idx] = clean_txt
                             save_progress(
@@ -674,7 +732,23 @@ with tab3:
                             )
                         except Exception:
                             pass
-                
+
+                    # Real-time Streamlit UI rerun trigger
+                    import time
+                    now = time.time()
+                    if not hasattr(LIVE_STATUS, '_last_rerun_time'):
+                        LIVE_STATUS._last_rerun_time = 0
+                    if now - LIVE_STATUS._last_rerun_time > 0.1 or is_finished:
+                        LIVE_STATUS._last_rerun_time = now
+                        try:
+                            from streamlit.runtime import get_instance
+                            runtime = get_instance()
+                            session_info = runtime._session_mgr.get_active_session_info(ctx.session_id)
+                            if session_info:
+                                session_info.session.request_rerun(None)
+                        except Exception:
+                            pass
+
                 st.session_state.batch_future = EXECUTOR.submit(
                     translate_with_context,
                     ctx,
@@ -722,16 +796,21 @@ with tab3:
                     glossary_dict[str(src).strip()] = str(tgt).strip()
             
             for idx in range(total_chunks):
+                is_this_single_active = idx in st.session_state.single_futures and st.session_state.single_futures[idx] is not None and not st.session_state.single_futures[idx].done()
+                is_batch_active_on_this = is_batch_running and LIVE_STATUS.current_chunk_idx == idx
+                
                 with st.container():
                     col_c1, col_c2, col_c3 = st.columns([5, 5, 2])
                     with col_c1:
                         st.text_area(f"청크 {idx+1} 원문", st.session_state.chunks[idx], height=120, key=f"chunk_orig_{idx}", disabled=True)
                     
                     # 개별 청크 번역 필드
-                    is_this_single_active = idx in st.session_state.single_futures and st.session_state.single_futures[idx] is not None and not st.session_state.single_futures[idx].done()
                     with col_c2:
                         if is_this_single_active:
                             stream_val = LIVE_STATUS.single_streaming_text.get(idx, "")
+                            st.text_area(f"청크 {idx+1} 번역 (실시간 스트리밍...)", stream_val, height=120, key=f"chunk_trans_stream_{idx}", disabled=True)
+                        elif is_batch_active_on_this:
+                            stream_val = LIVE_STATUS.current_streaming_text
                             st.text_area(f"청크 {idx+1} 번역 (실시간 스트리밍...)", stream_val, height=120, key=f"chunk_trans_stream_{idx}", disabled=True)
                         else:
                             new_trans = st.text_area(f"청크 {idx+1} 번역", st.session_state.translated_chunks[idx], height=120, key=f"chunk_trans_{idx}")
@@ -748,7 +827,6 @@ with tab3:
                         st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
                         
                         has_translation = bool(st.session_state.translated_chunks[idx].strip())
-                        is_batch_active_on_this = is_batch_running and LIVE_STATUS.current_chunk_idx == idx
                         
                         # 3. 진행 상황 확인 (상태 라벨 표시)
                         if is_this_single_active or is_batch_active_on_this:
@@ -807,47 +885,86 @@ with tab3:
                                             translate_directives=translate_directives
                                         )
                                         
-                                    def run_single_task(model, processor, prompt, chunk_idx, cancel_token):
-                                        from core.translator import translate_one_chunk
+                                        def run_single_task(model, processor, prompt, chunk_idx, cancel_token, ctx):
+                                            from core.translator import translate_one_chunk
+                                            from streamlit.runtime.scriptrunner import add_script_run_ctx
+                                            import threading
+                                            add_script_run_ctx(threading.current_thread(), ctx)
 
-                                        def on_token(_token_text, current_text):
-                                            LIVE_STATUS.single_streaming_text[chunk_idx] = current_text
+                                            max_retries = 3
+                                            clean_txt = None
+                                            for retry in range(max_retries):
+                                                current_temp = temperature
+                                                current_penalty = repetition_penalty
+                                                if retry > 0:
+                                                    current_temp = min(0.8, temperature + 0.15 * retry)
+                                                    current_penalty = repetition_penalty + 0.1 * retry
+                                                    LIVE_STATUS.single_streaming_text[chunk_idx] = f"[반복 루프 감지 - 재시도 {retry}/{max_retries-1}...]\n"
 
-                                        clean_txt = translate_one_chunk(
-                                            model,
-                                            processor,
-                                            prompt,
-                                            temp=temperature,
-                                            repetition_penalty=repetition_penalty,
-                                            cancel_token=cancel_token,
-                                            token_callback=on_token,
-                                        )
-                                        if clean_txt is None:
-                                            return None
+                                                def on_token(_token_text, current_text):
+                                                    LIVE_STATUS.single_streaming_text[chunk_idx] = current_text
+                                                    import time
+                                                    now = time.time()
+                                                    if not hasattr(LIVE_STATUS, '_last_rerun_time'):
+                                                        LIVE_STATUS._last_rerun_time = 0
+                                                    if now - LIVE_STATUS._last_rerun_time > 0.1:
+                                                        LIVE_STATUS._last_rerun_time = now
+                                                        try:
+                                                            from streamlit.runtime import get_instance
+                                                            runtime = get_instance()
+                                                            session_info = runtime._session_mgr.get_active_session_info(ctx.session_id)
+                                                            if session_info:
+                                                                session_info.session.request_rerun(None)
+                                                        except Exception:
+                                                            pass
 
-                                        LIVE_STATUS.single_completed_translations[chunk_idx] = clean_txt
-                                        return clean_txt
-                                        
+                                                clean_txt = translate_one_chunk(
+                                                    model,
+                                                    processor,
+                                                    prompt,
+                                                    temp=current_temp,
+                                                    repetition_penalty=current_penalty,
+                                                    cancel_token=cancel_token,
+                                                    token_callback=on_token,
+                                                )
+                                                if clean_txt == "__REPETITION_ERROR__":
+                                                    if retry < max_retries - 1:
+                                                        continue
+                                                    else:
+                                                        clean_txt = None
+                                                        break
+                                                elif clean_txt is None:
+                                                    break
+                                                else:
+                                                    break
+
+                                            if clean_txt is None:
+                                                return None
+
+                                            LIVE_STATUS.single_completed_translations[chunk_idx] = clean_txt
+                                            return clean_txt
+
+                                    single_ctx = get_script_run_ctx()
                                     st.session_state.single_futures[idx] = EXECUTOR.submit(
                                         run_single_task,
                                         st.session_state.model,
                                         st.session_state.processor,
                                         prompt,
                                         idx,
-                                        st.session_state.single_cancel_tokens[idx]
+                                        st.session_state.single_cancel_tokens[idx],
+                                        single_ctx
                                     )
                                     st.rerun()
                                     
                             if has_translation:
-                                if st.button("번역 지우기", key=f"clear_btn_{idx}", use_container_width=True, disabled=is_batch_running):
-                                    st.session_state.translated_chunks[idx] = ""
-                                    st.session_state[f"chunk_trans_{idx}"] = ""
-                                    save_progress_backup()
-                                    if is_srt:
-                                        st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])
-                                    else:
-                                        st.session_state.translated_script = "\n".join([c for c in st.session_state.translated_chunks if c])
-                                    st.rerun()
+                                st.button(
+                                    "번역 지우기",
+                                    key=f"clear_btn_{idx}",
+                                    use_container_width=True,
+                                    disabled=is_batch_running,
+                                    on_click=clear_chunk_callback,
+                                    args=(idx,)
+                                )
                 st.divider()
 
     # 7. 비동기 테스크 실행 중일 때 자동 리프레시 루프 가동
@@ -886,7 +1003,8 @@ with tab4:
                             st.session_state.model,
                             st.session_state.processor,
                             st.session_state.translated_script,
-                            st.session_state.persona
+                            st.session_state.persona,
+                            list(st.session_state.translated_chunks)
                         )
                         refined_text = future.result()
                         st.session_state.translated_script = refined_text

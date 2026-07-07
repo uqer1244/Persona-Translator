@@ -66,9 +66,24 @@ def clean_pdf_linebreaks(text: str) -> str:
     final_text = re.sub(r'\n{3,}', '\n\n', final_text)
     return final_text
 
-def chunk_text(text: str, chunk_size: int = 800) -> list[str]:
+def is_scene_boundary(line: str) -> bool:
+    line_strip = line.strip()
+    if not line_strip:
+        return False
+    # 1. Track 또는 트랙 시작
+    if re.match(r'^(Track|track|트랙)\s*\d+', line_strip):
+        return True
+    # 2. [SE: ...] 또는 [BGM: ...] 또는 [bgm: ...] 등 대괄호 안의 제어 명령
+    if re.match(r'^\[(SE|BGM|se|bgm|Track|track|트랙):?.*\]', line_strip):
+        return True
+    # 3. 시간대 인덱스 (자막 타임라인 제외)
+    if re.match(r'^\[\d{2}:\d{2}\]$', line_strip) or re.match(r'^\d{2}:\d{2}$', line_strip):
+        return True
+    return False
+
+def chunk_text(text: str, chunk_size: int = 800, min_chunk_size: int = 300) -> list[str]:
     """
-    일반 텍스트를 문장이나 줄 단위가 깨지지 않게 단락별로 나눕니다.
+    일반 텍스트를 장면 경계(SE/Track 등) 및 글자 수 제한을 고려하여 지능적으로 분할합니다.
     """
     text = text.replace("\r\n", "\n")
     paragraphs = text.split("\n")
@@ -78,7 +93,14 @@ def chunk_text(text: str, chunk_size: int = 800) -> list[str]:
     
     for para in paragraphs:
         para_len = len(para) + 1
-        if current_length + para_len > chunk_size and current_chunk:
+        is_boundary = is_scene_boundary(para)
+        
+        # 장면 경계이고 현재 청크에 일정 정보가 쌓였을 때 분할하여 문맥 보존
+        if is_boundary and current_length >= min_chunk_size and current_chunk:
+            chunks.append("\n".join(current_chunk))
+            current_chunk = [para]
+            current_length = para_len
+        elif current_length + para_len > chunk_size and current_chunk:
             chunks.append("\n".join(current_chunk))
             current_chunk = [para]
             current_length = para_len
@@ -91,22 +113,31 @@ def chunk_text(text: str, chunk_size: int = 800) -> list[str]:
         
     return chunks
 
-def chunk_srt(srt_text: str, blocks_per_chunk: int = 5) -> list[str]:
+def chunk_srt(srt_text: str, target_chunk_size: int = 800) -> list[str]:
     """
-    SRT 자막 파일을 빈 줄(\n\n) 기준으로 파싱하여 블록 단위로 청킹합니다.
+    SRT 자막 블록들을 합산 글자 수가 target_chunk_size 내외가 되도록 동적으로 묶어 청킹합니다.
     """
     srt_text = srt_text.replace("\r\n", "\n")
     raw_blocks = re.split(r'\n\s*\n', srt_text.strip())
     
     chunks = []
     current_blocks = []
+    current_length = 0
+    
     for block in raw_blocks:
-        if block.strip():
-            current_blocks.append(block.strip())
-            if len(current_blocks) >= blocks_per_chunk:
-                chunks.append("\n\n".join(current_blocks))
-                current_blocks = []
-                
+        block_strip = block.strip()
+        if not block_strip:
+            continue
+            
+        block_len = len(block_strip) + 2
+        if current_length + block_len > target_chunk_size and current_blocks:
+            chunks.append("\n\n".join(current_blocks))
+            current_blocks = [block_strip]
+            current_length = block_len
+        else:
+            current_blocks.append(block_strip)
+            current_length += block_len
+            
     if current_blocks:
         chunks.append("\n\n".join(current_blocks))
         
@@ -133,6 +164,8 @@ def build_translation_prompt(
     # 1. 페르소나 제약 사항 구성
     persona_str = f"- 말투/어조: {persona.get('tone', '자연스러운 말투')}\n"
     persona_str += f"- 화자-청자 관계: {persona.get('relationship', '어울리는 관계')}\n"
+    if persona.get("situation"):
+        persona_str += f"- 배경 상황 및 스토리 맥락: {persona.get('situation')}\n"
     if persona.get("key_rules"):
         rules = "\n".join([f"  * {rule}" for rule in persona["key_rules"]])
         persona_str += f"- 주요 규칙:\n{rules}"
@@ -210,6 +243,8 @@ def build_retranslation_prompt(
     # 1. 페르소나 제약 사항 구성
     persona_str = f"- 말투/어조: {persona.get('tone', '자연스러운 말투')}\n"
     persona_str += f"- 화자-청자 관계: {persona.get('relationship', '어울리는 관계')}\n"
+    if persona.get("situation"):
+        persona_str += f"- 배경 상황 및 스토리 맥락: {persona.get('situation')}\n"
     if persona.get("key_rules"):
         rules = "\n".join([f"  * {rule}" for rule in persona["key_rules"]])
         persona_str += f"- 주요 규칙:\n{rules}"
@@ -293,6 +328,7 @@ def stream_prompt(
 ) -> str | None:
     from mlx_vlm.generate import stream_generate
     from mlx_vlm.prompt_utils import apply_chat_template
+    from core.utils import has_repetition
 
     messages = [{"role": "user", "content": prompt}]
     formatted_prompt = apply_chat_template(
@@ -322,6 +358,10 @@ def stream_prompt(
         output += response.text
         if token_callback:
             token_callback(response.text, output)
+            
+        if has_repetition(output):
+            print(f"[TRANSLATION WARNING] Repetition loop detected! Stopping stream.")
+            raise ValueError("RepetitionLoopDetected")
 
     return clean_markdown(output)
 
@@ -335,16 +375,21 @@ def translate_one_chunk(
     cancel_token: dict = None,
     token_callback=None,
 ) -> str | None:
-    result = stream_prompt(
-        model,
-        processor,
-        prompt,
-        temp=temp,
-        repetition_penalty=repetition_penalty,
-        max_tokens=1500,
-        cancel_token=cancel_token,
-        token_callback=token_callback,
-    )
+    try:
+        result = stream_prompt(
+            model,
+            processor,
+            prompt,
+            temp=temp,
+            repetition_penalty=repetition_penalty,
+            max_tokens=1500,
+            cancel_token=cancel_token,
+            token_callback=token_callback,
+        )
+    except ValueError as e:
+        if str(e) == "RepetitionLoopDetected":
+            return "__REPETITION_ERROR__"
+        raise e
 
     import mlx.core as mx
     import gc
@@ -374,7 +419,7 @@ def translate_script(
     중단 요청(cancel_token)이 감지되면 즉시 중지합니다.
     """
     if is_srt:
-        chunks = chunk_srt(script)
+        chunks = chunk_srt(script, target_chunk_size=chunk_size)
     else:
         chunks = chunk_text(script, chunk_size=chunk_size)
         
@@ -410,19 +455,42 @@ def translate_script(
             translate_directives=translate_directives
         )
         
-        def on_token(token_text, chunk_translation):
-            if progress_callback:
-                progress_callback(token_text, idx, total_chunks, chunk_translation, False)
+        max_retries = 3
+        chunk_translation_clean = None
+        
+        for retry in range(max_retries):
+            current_temp = temp
+            current_penalty = repetition_penalty
+            if retry > 0:
+                current_temp = min(0.8, temp + 0.15 * retry)
+                current_penalty = repetition_penalty + 0.1 * retry
+                if progress_callback:
+                    progress_callback(f"\n[반복 루프 감지 - 재시도 {retry}/{max_retries-1}...]\n", idx, total_chunks, "", False)
 
-        chunk_translation_clean = translate_one_chunk(
-            model,
-            processor,
-            prompt,
-            temp=temp,
-            repetition_penalty=repetition_penalty,
-            cancel_token=cancel_token,
-            token_callback=on_token,
-        )
+            def on_token(token_text, chunk_translation):
+                if progress_callback:
+                    progress_callback(token_text, idx, total_chunks, chunk_translation, False)
+
+            chunk_translation_clean = translate_one_chunk(
+                model,
+                processor,
+                prompt,
+                temp=current_temp,
+                repetition_penalty=current_penalty,
+                cancel_token=cancel_token,
+                token_callback=on_token,
+            )
+
+            if chunk_translation_clean == "__REPETITION_ERROR__":
+                if retry < max_retries - 1:
+                    continue
+                else:
+                    chunk_translation_clean = None
+                    break
+            elif chunk_translation_clean is None:
+                break
+            else:
+                break
 
         if chunk_translation_clean is None:
             break
