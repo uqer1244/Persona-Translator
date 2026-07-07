@@ -1,121 +1,21 @@
 import streamlit as st
 import os
-import re
 import pandas as pd
-import json
 
-# 글로벌 단일 스레드 Executor를 Streamlit resource 캐싱을 통해 싱글톤으로 유지
-@st.cache_resource
-def get_executor():
-    from concurrent.futures import ThreadPoolExecutor
-    return ThreadPoolExecutor(max_workers=1)
-
-EXECUTOR = get_executor()
-
-class LiveStatus:
-    def __init__(self):
-        self.current_chunk_idx = -1
-        self.current_streaming_text = ""
-        self.completed_translations = {}        # idx -> clean_translation
-        self.single_streaming_text = {}        # idx -> str
-        self.single_completed_translations = {} # idx -> clean_translation
-
-if "LIVE_STATUS" not in st.session_state:
-    st.session_state.LIVE_STATUS = LiveStatus()
-
-LIVE_STATUS = st.session_state.LIVE_STATUS
-
-def colorize_directives(text: str) -> str:
-    """
-    대본에서 괄호 지시문 및 의성어/의태어 형태의 텍스트(예: [whispering], (한숨), *giggles*)를 감지하여
-    HTML span 태그를 통해 색상을 입혀 반환합니다.
-    """
-    if not text:
-        return ""
-    # HTML 특수기호 안전 처리 (이스케이프)
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    
-    # 1. 대괄호 [속삭임], [whispering] -> 파스텔 오렌지 (#ffb86c)
-    text = re.sub(r'(\[[^\]\n]+\])', r'<span style="color: #ffb86c; font-weight: bold;">\1</span>', text)
-    
-    # 2. 소괄호 (한숨), (sighs) -> 파스텔 핑크 (#ff79c6)
-    text = re.sub(r'(\([^)\n]+\))', r'<span style="color: #ff79c6; font-style: italic;">\1</span>', text)
-    
-    # 3. 별표 *소곤소곤*, *giggles* -> 파스텔 민트/하늘 (#8be9fd)
-    text = re.sub(r'(\*[^*\n]+\*)', r'<span style="color: #8be9fd; font-style: italic;">\1</span>', text)
-    
-    # 4. SRT 타임라인 (00:00:01,000 --> 00:00:04,000) -> 흐린 회색 (#6272a4)
-    text = re.sub(r'(\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{3})', r'<span style="color: #6272a4; font-size: 12px; font-family: monospace;">\1</span>', text)
-    
-    return text
-
-
-def get_backup_dir(file_name: str) -> str:
-    backup_root = os.path.abspath("./temp_backups")
-    base_name, _ = os.path.splitext(file_name)
-    safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', base_name)
-    project_dir = os.path.join(backup_root, safe_name)
-    os.makedirs(project_dir, exist_ok=True)
-    return project_dir
-
-def get_backup_path(file_name: str) -> str:
-    project_dir = get_backup_dir(file_name)
-    return os.path.join(project_dir, "progress.json")
-
-def save_progress_backup():
-    if "file_name" not in st.session_state or not st.session_state.file_name or "chunks" not in st.session_state or not st.session_state.chunks:
-        return
-    backup_path = get_backup_path(st.session_state.file_name)
-    data = {
-        "file_name": st.session_state.file_name,
-        "original_chunks": st.session_state.chunks,
-        "translated_chunks": st.session_state.translated_chunks,
-    }
-    with open(backup_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def load_progress_backup(file_name: str) -> bool:
-    backup_path = get_backup_path(file_name)
-    if os.path.exists(backup_path):
-        try:
-            with open(backup_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # 청크 개수가 일치하는 경우에만 이전 번역 불러오기 진행
-            if len(data.get("original_chunks", [])) == len(st.session_state.chunks):
-                st.session_state.translated_chunks = data.get("translated_chunks", [])
-                
-                # 백업 폴더 내부의 이미지 디렉토리 조회 및 로드
-                project_dir = get_backup_dir(file_name)
-                images_dir = os.path.join(project_dir, "images")
-                if os.path.exists(images_dir):
-                    saved_images = [os.path.join(images_dir, f) for f in os.listdir(images_dir) if not f.startswith(".")]
-                    saved_images.sort()
-                    st.session_state.temp_image_paths = saved_images
-                else:
-                    st.session_state.temp_image_paths = []
-                return True
-        except Exception:
-            pass
-    return False
-
-def sync_chunks(chunk_size):
-    if not st.session_state.original_script.strip():
-        st.session_state.chunks = []
-        st.session_state.translated_chunks = []
-        return
-        
-    from core.translator import chunk_text, chunk_srt
-    is_srt = st.session_state.file_name.endswith(".srt")
-    if is_srt:
-        new_chunks = chunk_srt(st.session_state.original_script)
-    else:
-        new_chunks = chunk_text(st.session_state.original_script, chunk_size=chunk_size)
-        
-    if st.session_state.chunks != new_chunks:
-        st.session_state.chunks = new_chunks
-        st.session_state.translated_chunks = [""] * len(new_chunks)
-        # 로컬 백업이 존재하면 이어서 번역할 수 있도록 로드 시도
-        load_progress_backup(st.session_state.file_name)
+from core.utils import (
+    EXECUTOR,
+    LiveStatus,
+    colorize_directives,
+    get_backup_dir,
+    get_backup_path,
+    save_progress_backup,
+    sync_chunks,
+    load_model_cached,
+    extract_script_structure,
+    unload_model
+)
+from core.progress_store import save_progress
+from core.progress_store import get_image_note_path, load_image_note
 
 
 
@@ -226,30 +126,11 @@ if "single_cancel_tokens" not in st.session_state:
     st.session_state.single_cancel_tokens = {}
 
 
-# Lazy loading model
-@st.cache_resource
-def load_model_cached(model_path: str):
-    def _load():
-        import mlx.core as mx
-        import gc
-        # 로딩 전 메모리 비우기
-        mx.metal.clear_cache()
-        gc.collect()
-        
-        # 메탈 캐시 한계를 0으로 설정하여 캐시 메모리 즉시 반환 유도
-        mx.metal.set_cache_limit(0)
-        
-        from mlx_vlm import load
-        model, processor = load(model_path)
-        
-        # 로딩 후 정리
-        mx.metal.clear_cache()
-        gc.collect()
-        return model, processor
-    
-    # MLX 가동용 단일 스레드 스레드풀에서 모델 로드 실행
-    future = EXECUTOR.submit(_load)
-    return future.result()
+# LIVE_STATUS session state initialization
+if "LIVE_STATUS" not in st.session_state:
+    st.session_state.LIVE_STATUS = LiveStatus()
+
+LIVE_STATUS = st.session_state.LIVE_STATUS
 
 # Main Title
 st.title("PersonaASMR-Translator")
@@ -267,6 +148,7 @@ with st.sidebar:
             full_path = os.path.join(MODELS_DIR, d)
             if os.path.isdir(full_path) and d != "hf_cache" and not d.startswith("."):
                 local_models.append(os.path.join("models", d))
+    local_models.sort(key=lambda path: ("8bit" in path.lower(), "4bit" not in path.lower(), path.lower()))
                 
     # Model Selection UI
     options = local_models + ["직접 경로 입력..."]
@@ -285,12 +167,19 @@ with st.sidebar:
         model_path = os.path.abspath(selected_option)
         
     st.markdown(f"**로드할 경로**: `{model_path}`")
+    is_high_memory_model = "8bit" in model_path.lower()
+    allow_high_memory_model = False
+    if is_high_memory_model:
+        st.warning("8bit 12B 모델은 메모리 부족으로 Python 프로세스가 종료될 수 있습니다. 가능하면 4bit 모델을 먼저 사용하세요.")
+        allow_high_memory_model = st.checkbox("위험을 이해하고 8bit 모델 로딩 허용", value=False)
     
     # Model load button
     if not st.session_state.model_loaded:
         st.markdown('<div class="status-box status-warn">모델 로드 필요</div>', unsafe_allow_html=True)
         if st.button("로컬 모델 메모리에 로딩", use_container_width=True):
-            if not os.path.exists(model_path) and not "/" in model_path:
+            if is_high_memory_model and not allow_high_memory_model:
+                st.error("메모리 보호를 위해 8bit 모델 로딩을 막았습니다. 4bit 모델을 선택하거나 허용 체크박스를 켜 주세요.")
+            elif not os.path.exists(model_path) and not "/" in model_path:
                 st.error("지정한 로컬 경로가 존재하지 않습니다. 올바른 경로를 입력해 주세요.")
             else:
                 try:
@@ -306,8 +195,8 @@ with st.sidebar:
     else:
         st.markdown('<div class="status-box status-ok">모델 준비 완료</div>', unsafe_allow_html=True)
         st.info(f"현재 로드된 모델: {model_path}")
-        if st.button("모델 메모리 재로딩", use_container_width=True):
-            st.session_state.model_loaded = False
+        if st.button("모델 메모리 언로드", use_container_width=True):
+            unload_model()
             st.rerun()
             
     st.divider()
@@ -356,20 +245,27 @@ with tab1:
     if uploaded_images:
         project_dir = get_backup_dir(st.session_state.file_name)
         images_dir = os.path.join(project_dir, "images")
-        # 이전 임시 이미지 삭제
-        if os.path.exists(images_dir):
-            for f in os.listdir(images_dir):
-                try:
-                    os.remove(os.path.join(images_dir, f))
-                except Exception:
-                    pass
         os.makedirs(images_dir, exist_ok=True)
         
         temp_image_paths = []
         for idx, img_file in enumerate(uploaded_images):
-            img_path = os.path.join(images_dir, f"img_{idx}_{img_file.name}")
-            with open(img_path, "wb") as f:
-                f.write(img_file.read())
+            raw_image = img_file.read()
+            import hashlib
+
+            image_hash = hashlib.sha256(raw_image).hexdigest()[:12]
+            image_stem = os.path.splitext(img_file.name)[0]
+            safe_stem = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in image_stem)
+            img_path = os.path.join(images_dir, f"img_{idx}_{safe_stem}_{image_hash}.jpg")
+            try:
+                from PIL import Image
+                import io
+
+                image = Image.open(io.BytesIO(raw_image)).convert("RGB")
+                image.thumbnail((768, 768))
+                image.save(img_path, format="JPEG", quality=82, optimize=True)
+            except Exception:
+                with open(img_path, "wb") as f:
+                    f.write(raw_image)
             temp_image_paths.append(img_path)
             
         st.session_state.temp_image_paths = temp_image_paths
@@ -454,19 +350,21 @@ with tab2:
         st.subheader("캐릭터 페르소나 설정")
         st.caption("대본 번역 시 적용할 캐릭터의 어투와 성격 규칙입니다.")
         
-        # Analyze button
-        if st.button("대본 분석 및 페르소나 자동 생성", use_container_width=True):
+        # Persona analyze button
+        if st.button("페르소나 및 용어집 자동 생성", use_container_width=True):
             if not st.session_state.model_loaded:
                 st.error("먼저 사이드바에서 모델을 로드해주세요!")
             elif not st.session_state.original_script and not st.session_state.metadata_text:
                 st.error("페르소나 분석을 위해 대본 원문이나 메타데이터를 입력해 주세요.")
             else:
                 from core.analyzer import analyze_persona
-                # Use first 1000 characters of script for preview
-                script_preview = st.session_state.original_script[:1000]
+                script_preview = extract_script_structure(
+                    st.session_state.original_script,
+                    file_name=st.session_state.file_name,
+                    max_total_chars=7000
+                )
                 with st.spinner("AI가 대본과 메타데이터를 분석하여 페르소나를 도출 중입니다..."):
                     try:
-                        # 단일 스레드풀에서 분석 실행 (GPU 스트림 스레드 일치 + 소개 이미지 경로 전달)
                         future = EXECUTOR.submit(
                             analyze_persona,
                             st.session_state.model,
@@ -476,23 +374,12 @@ with tab2:
                             st.session_state.temp_image_paths
                         )
                         extracted_persona = future.result()
-                        # 페르소나 매핑
                         st.session_state.persona = {
                             "tone": extracted_persona.get("tone", ""),
                             "relationship": extracted_persona.get("relationship", ""),
                             "key_rules": extracted_persona.get("key_rules", [])
                         }
-                        
-                        # 요약 정보 매핑
-                        if "summary" in extracted_persona:
-                            st.session_state.script_summary = {
-                                "speaker_name": extracted_persona["summary"].get("speaker_name", "미분석"),
-                                "listener_role": extracted_persona["summary"].get("listener_role", "미분석"),
-                                "situation": extracted_persona["summary"].get("situation", "미분석"),
-                                "story": extracted_persona["summary"].get("story", "미분석")
-                            }
-                        
-                        # 용어집 추출 및 자동 입력
+
                         if "glossary" in extracted_persona:
                             new_glossary = []
                             for item in extracted_persona["glossary"]:
@@ -508,6 +395,44 @@ with tab2:
                     except Exception as e:
                         import traceback
                         st.error(f"분석 중 오류 발생: {e}")
+                        st.code(traceback.format_exc(), language="python")
+
+        if st.button("대본 상황 및 스토리 요약 생성", use_container_width=True):
+            if not st.session_state.model_loaded:
+                st.error("먼저 사이드바에서 모델을 로드해주세요!")
+            elif not st.session_state.original_script and not st.session_state.metadata_text:
+                st.error("요약 생성을 위해 대본 원문이나 메타데이터를 입력해 주세요.")
+            else:
+                from core.analyzer import analyze_script_summary
+                script_preview = extract_script_structure(
+                    st.session_state.original_script,
+                    file_name=st.session_state.file_name,
+                    max_total_chars=12000
+                )
+                with st.spinner("AI가 대본 구조와 소개 이미지를 분석하여 요약을 생성 중입니다..."):
+                    try:
+                        future = EXECUTOR.submit(
+                            analyze_script_summary,
+                            st.session_state.model,
+                            st.session_state.processor,
+                            st.session_state.metadata_text,
+                            script_preview,
+                            st.session_state.temp_image_paths,
+                            st.session_state.file_name,
+                            list(st.session_state.chunks)
+                        )
+                        summary = future.result()
+                        st.session_state.script_summary = {
+                            "speaker_name": summary.get("speaker_name", "미분석"),
+                            "listener_role": summary.get("listener_role", "미분석"),
+                            "situation": summary.get("situation", "미분석"),
+                            "story": summary.get("story", "미분석")
+                        }
+                        st.success("대본 상황 및 스토리 요약 생성 완료!")
+                        st.rerun()
+                    except Exception as e:
+                        import traceback
+                        st.error(f"요약 생성 중 오류 발생: {e}")
                         st.code(traceback.format_exc(), language="python")
                         
         # Editable inputs
@@ -551,6 +476,27 @@ with tab2:
         
     # 2번 탭 최하단에 분석된 상황 및 줄거리 요약 표시
     st.divider()
+    st.subheader("소개 이미지 분석 결과")
+    st.caption("업로드한 이미지를 VLM이 어떻게 이해했는지 확인합니다. 분석 결과는 temp_backups의 이미지 파일 옆에 저장됩니다.")
+
+    if st.session_state.temp_image_paths:
+        for idx, img_path in enumerate(st.session_state.temp_image_paths, start=1):
+            note = load_image_note(img_path)
+            note_path = get_image_note_path(img_path)
+            with st.expander(f"이미지 {idx}: {os.path.basename(img_path)}", expanded=False):
+                col_img, col_note = st.columns([1, 2])
+                with col_img:
+                    st.image(img_path, use_container_width=True)
+                with col_note:
+                    st.caption(f"저장 위치: {note_path}")
+                    if note:
+                        st.markdown(note)
+                    else:
+                        st.info("아직 이미지 분석 결과가 없습니다. 페르소나 또는 요약 생성 버튼을 누르면 자동으로 생성됩니다.")
+    else:
+        st.info("업로드되었거나 백업에서 불러온 소개 이미지가 없습니다.")
+
+    st.divider()
     st.subheader("대본 상황 및 스토리 요약")
     st.caption("대본 분석을 통해 자동으로 도출된 주인공 설정, 배경 상황 및 대략적인 스토리 흐름입니다.")
     
@@ -580,14 +526,21 @@ with tab3:
     for idx, trans_text in list(LIVE_STATUS.completed_translations.items()):
         if idx < len(st.session_state.translated_chunks) and st.session_state.translated_chunks[idx] != trans_text:
             st.session_state.translated_chunks[idx] = trans_text
+            st.session_state[f"chunk_trans_{idx}"] = trans_text
             new_saved = True
     if new_saved:
         save_progress_backup()
+        is_srt = st.session_state.file_name.endswith(".srt")
+        if is_srt:
+            st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])
+        else:
+            st.session_state.translated_script = "\n".join([c for c in st.session_state.translated_chunks if c])
         
     new_single_saved = False
     for idx, trans_text in list(LIVE_STATUS.single_completed_translations.items()):
         if idx < len(st.session_state.translated_chunks) and st.session_state.translated_chunks[idx] != trans_text:
             st.session_state.translated_chunks[idx] = trans_text
+            st.session_state[f"chunk_trans_{idx}"] = trans_text
             new_single_saved = True
             # Clean up single task records once saved
             if idx in st.session_state.single_futures:
@@ -596,6 +549,11 @@ with tab3:
                 del LIVE_STATUS.single_streaming_text[idx]
     if new_single_saved:
         save_progress_backup()
+        is_srt = st.session_state.file_name.endswith(".srt")
+        if is_srt:
+            st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])
+        else:
+            st.session_state.translated_script = "\n".join([c for c in st.session_state.translated_chunks if c])
 
     # 2. 번역 실행 상태 점검
     is_batch_running = st.session_state.batch_future is not None and not st.session_state.batch_future.done()
@@ -652,6 +610,8 @@ with tab3:
             if total_chunks > 0:
                 st.session_state.translated_chunks = [""] * total_chunks
                 st.session_state.translated_script = ""
+                for idx in range(total_chunks):
+                    st.session_state[f"chunk_trans_{idx}"] = ""
                 backup_path = get_backup_path(st.session_state.file_name)
                 if os.path.exists(backup_path):
                     try:
@@ -692,12 +652,28 @@ with tab3:
                 LIVE_STATUS.current_streaming_text = ""
                 LIVE_STATUS.completed_translations = {}
                 
+                file_name_captured = st.session_state.file_name
+                original_chunks_captured = list(st.session_state.chunks)
+                translated_chunks_snapshot = list(st.session_state.translated_chunks)
+                
                 def update_progress(token_text, chunk_idx, total_chunks, current_chunk_translation, is_finished):
                     LIVE_STATUS.current_chunk_idx = chunk_idx
                     LIVE_STATUS.current_streaming_text = current_chunk_translation
                     if is_finished:
                         from core.translator import clean_markdown
-                        LIVE_STATUS.completed_translations[chunk_idx] = clean_markdown(current_chunk_translation)
+                        clean_txt = clean_markdown(current_chunk_translation)
+                        LIVE_STATUS.completed_translations[chunk_idx] = clean_txt
+                        
+                        # 백그라운드 스레드에서 직접 파일에 번역 결과 즉각 저장 (실시간 디스크 백업 보장)
+                        try:
+                            translated_chunks_snapshot[chunk_idx] = clean_txt
+                            save_progress(
+                                file_name_captured,
+                                original_chunks_captured,
+                                translated_chunks_snapshot,
+                            )
+                        except Exception:
+                            pass
                 
                 st.session_state.batch_future = EXECUTOR.submit(
                     translate_with_context,
@@ -832,43 +808,23 @@ with tab3:
                                         )
                                         
                                     def run_single_task(model, processor, prompt, chunk_idx, cancel_token):
-                                        from mlx_vlm.generate import stream_generate
-                                        from mlx_vlm.prompt_utils import apply_chat_template
-                                        from core.translator import clean_markdown
-                                        
-                                        messages = [{"role": "user", "content": prompt}]
-                                        formatted_prompt = apply_chat_template(
-                                            processor,
-                                            model.config,
-                                            messages,
-                                            num_images=0,
-                                            num_audios=0
-                                        )
-                                        generator = stream_generate(
+                                        from core.translator import translate_one_chunk
+
+                                        def on_token(_token_text, current_text):
+                                            LIVE_STATUS.single_streaming_text[chunk_idx] = current_text
+
+                                        clean_txt = translate_one_chunk(
                                             model,
                                             processor,
-                                            prompt=formatted_prompt,
+                                            prompt,
                                             temp=temperature,
-                                            max_tokens=1500,
-                                            kv_bits=3.5,
-                                            kv_quant_scheme="turboquant",
                                             repetition_penalty=repetition_penalty,
-                                            repetition_context_size=100
+                                            cancel_token=cancel_token,
+                                            token_callback=on_token,
                                         )
-                                        
-                                        chunk_translation = ""
-                                        aborted = False
-                                        for response in generator:
-                                            if cancel_token and cancel_token.get("cancel"):
-                                                aborted = True
-                                                break
-                                            chunk_translation += response.text
-                                            LIVE_STATUS.single_streaming_text[chunk_idx] = chunk_translation
-                                            
-                                        if aborted:
+                                        if clean_txt is None:
                                             return None
-                                            
-                                        clean_txt = clean_markdown(chunk_translation)
+
                                         LIVE_STATUS.single_completed_translations[chunk_idx] = clean_txt
                                         return clean_txt
                                         
@@ -885,6 +841,7 @@ with tab3:
                             if has_translation:
                                 if st.button("번역 지우기", key=f"clear_btn_{idx}", use_container_width=True, disabled=is_batch_running):
                                     st.session_state.translated_chunks[idx] = ""
+                                    st.session_state[f"chunk_trans_{idx}"] = ""
                                     save_progress_backup()
                                     if is_srt:
                                         st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])

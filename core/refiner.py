@@ -41,7 +41,7 @@ def refine_translation(model, processor, translated_text: str, persona: dict) ->
         processor,
         prompt=formatted_prompt,
         temp=0.2,
-        max_tokens=4000,
+        max_tokens=2000,
         kv_bits=3.5,
         kv_quant_scheme="turboquant",
         repetition_penalty=1.1,

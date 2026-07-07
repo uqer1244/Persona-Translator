@@ -280,6 +280,79 @@ def build_retranslation_prompt(
 """
     return prompt
 
+
+def stream_prompt(
+    model,
+    processor,
+    prompt: str,
+    temp: float = 0.3,
+    repetition_penalty: float = 1.1,
+    max_tokens: int = 1500,
+    cancel_token: dict = None,
+    token_callback=None,
+) -> str | None:
+    from mlx_vlm.generate import stream_generate
+    from mlx_vlm.prompt_utils import apply_chat_template
+
+    messages = [{"role": "user", "content": prompt}]
+    formatted_prompt = apply_chat_template(
+        processor,
+        model.config,
+        messages,
+        num_images=0,
+        num_audios=0
+    )
+
+    output = ""
+    generator = stream_generate(
+        model,
+        processor,
+        prompt=formatted_prompt,
+        temp=temp,
+        max_tokens=max_tokens,
+        kv_bits=3.5,
+        kv_quant_scheme="turboquant",
+        repetition_penalty=repetition_penalty,
+        repetition_context_size=100
+    )
+
+    for response in generator:
+        if cancel_token and cancel_token.get("cancel"):
+            return None
+        output += response.text
+        if token_callback:
+            token_callback(response.text, output)
+
+    return clean_markdown(output)
+
+
+def translate_one_chunk(
+    model,
+    processor,
+    prompt: str,
+    temp: float = 0.3,
+    repetition_penalty: float = 1.1,
+    cancel_token: dict = None,
+    token_callback=None,
+) -> str | None:
+    result = stream_prompt(
+        model,
+        processor,
+        prompt,
+        temp=temp,
+        repetition_penalty=repetition_penalty,
+        max_tokens=1500,
+        cancel_token=cancel_token,
+        token_callback=token_callback,
+    )
+
+    import mlx.core as mx
+    import gc
+    mx.clear_cache()
+    gc.collect()
+    return result
+
+
 def translate_script(
     model,
     processor,
@@ -300,10 +373,6 @@ def translate_script(
     이미 번역된 청크(existing_translations)는 건너뛰며 흐름을 이어갑니다.
     중단 요청(cancel_token)이 감지되면 즉시 중지합니다.
     """
-    # GPU 스트림 스레드 충돌 방지를 위해 함수 내부에서 로컬 임포트 수행
-    from mlx_vlm.generate import stream_generate
-    from mlx_vlm.prompt_utils import apply_chat_template
-
     if is_srt:
         chunks = chunk_srt(script)
     else:
@@ -341,44 +410,23 @@ def translate_script(
             translate_directives=translate_directives
         )
         
-        messages = [{"role": "user", "content": prompt}]
-        formatted_prompt = apply_chat_template(
-            processor,
-            model.config,
-            messages,
-            num_images=0,
-            num_audios=0
-        )
-        
-        chunk_translation = ""
-        
-        # MLX VLM 스트리밍 생성
-        generator = stream_generate(
-            model,
-            processor,
-            prompt=formatted_prompt,
-            temp=temp,
-            max_tokens=1500,
-            kv_bits=3.5,
-            kv_quant_scheme="turboquant",
-            repetition_penalty=repetition_penalty,
-            repetition_context_size=100
-        )
-        
-        aborted = False
-        for response in generator:
-            if cancel_token and cancel_token.get("cancel"):
-                aborted = True
-                break
-            token_text = response.text
-            chunk_translation += token_text
+        def on_token(token_text, chunk_translation):
             if progress_callback:
                 progress_callback(token_text, idx, total_chunks, chunk_translation, False)
-                
-        if aborted:
+
+        chunk_translation_clean = translate_one_chunk(
+            model,
+            processor,
+            prompt,
+            temp=temp,
+            repetition_penalty=repetition_penalty,
+            cancel_token=cancel_token,
+            token_callback=on_token,
+        )
+
+        if chunk_translation_clean is None:
             break
-            
-        chunk_translation_clean = clean_markdown(chunk_translation)
+
         translated_chunks.append(chunk_translation_clean)
         
         prev_original = chunk
@@ -386,12 +434,6 @@ def translate_script(
         
         if progress_callback:
             progress_callback("", idx, total_chunks, chunk_translation_clean, True)
-        
-        # GPU 메모리 캐시 비우기 및 가비지 컬렉션 실행 (OOM 방지)
-        import mlx.core as mx
-        import gc
-        mx.metal.clear_cache()
-        gc.collect()
         
     if is_srt:
         return "\n\n".join(translated_chunks)

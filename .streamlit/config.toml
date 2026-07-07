@@ -1,0 +1,3 @@
+[server]
+# transformers 라이브러리의 지연 로딩(lazy import)으로 인한 ModuleNotFoundError (torch 미설치 경고) 방지를 위해 파일 워처를 비활성화합니다.
+fileWatcherType = "none"

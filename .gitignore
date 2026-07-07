@@ -35,3 +35,5 @@ Thumbs.db
 *.swp
 
 /sample
+/output
+plan.md
