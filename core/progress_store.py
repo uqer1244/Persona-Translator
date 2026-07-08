@@ -4,7 +4,7 @@ import os
 import re
 
 
-BACKUP_ROOT = os.path.abspath("./temp_backups")
+BACKUP_ROOT = os.path.abspath("./DLdata")
 
 def extract_rj_code(text: str) -> str | None:
     if not text:

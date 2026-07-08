@@ -12,7 +12,7 @@ from core.progress_store import (
     load_image_note,
     get_image_note_path
 )
-from core.analyzer import analyze_persona
+from core.analyzer import analyze_persona, analyze_glossary
 
 def render_tab_persona():
     st.header("페르소나 및 용어집 설정")
@@ -35,13 +35,21 @@ def render_tab_persona():
                     file_name=st.session_state.file_name,
                     max_total_chars=3000
                 )
-                with st.spinner("AI가 대본과 메타데이터를 분석하여 페르소나를 도출 중입니다..."):
+                with st.spinner("AI가 대본과 메타데이터를 분석하여 페르소나 및 신규 용어집을 자동 추출 중입니다..."):
                     try:
                         # Load existing master glossary to feed into LLM for incremental extraction
                         master = load_master_glossary()
                         
-                        future = EXECUTOR.submit(
+                        future_persona = EXECUTOR.submit(
                             analyze_persona,
+                            st.session_state.model,
+                            st.session_state.processor,
+                            st.session_state.metadata_text,
+                            script_preview,
+                            st.session_state.temp_image_paths
+                        )
+                        future_glossary = EXECUTOR.submit(
+                            analyze_glossary,
                             st.session_state.model,
                             st.session_state.processor,
                             st.session_state.metadata_text,
@@ -49,7 +57,9 @@ def render_tab_persona():
                             st.session_state.temp_image_paths,
                             master
                         )
-                        extracted_persona = future.result()
+                        extracted_persona = future_persona.result()
+                        extracted_glossary = future_glossary.result()
+
                         st.session_state.persona = {
                             "tone": extracted_persona.get("tone", ""),
                             "relationship": extracted_persona.get("relationship", ""),
@@ -57,12 +67,12 @@ def render_tab_persona():
                             "key_rules": extracted_persona.get("key_rules", [])
                         }
 
-                        if "glossary" in extracted_persona:
+                        if "glossary" in extracted_glossary:
                             new_glossary = []
-                            for item in extracted_persona["glossary"]:
+                            for item in extracted_glossary["glossary"]:
                                 src = item.get("source") or item.get("원어") or ""
                                 tgt = item.get("target") or item.get("번역어") or ""
-                                desc = item.get("context") or item.get("설명") or item.get("뉘앙스") or ""
+                                desc = item.get("context") or item.get("설명") or item.get("뉘앙스") or item.get("description/nuance") or item.get("description") or ""
                                 if src and tgt:
                                     new_glossary.append({
                                         "원어 (Source)": src,

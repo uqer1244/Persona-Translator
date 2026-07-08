@@ -37,7 +37,8 @@ def has_repetition(text: str) -> bool:
     # 1. 단어/구절 단위 반복 감지 (예: "밑에 눈 밑에 눈 밑에 눈")
     # 짧은 길이(2자)부터 긴 길이(40자)까지 패턴 매칭
     for pattern_len in range(2, 40):
-        if len(text_to_check) < pattern_len * 4:
+        required_repeats = 4 if pattern_len < 5 else 3
+        if len(text_to_check) < pattern_len * required_repeats:
             continue
         pattern = text_to_check[-pattern_len:]
         
@@ -45,8 +46,6 @@ def has_repetition(text: str) -> bool:
         if not pattern.strip() or all(c in " .,!?\n*()[]_-" for c in pattern):
             continue
             
-        # 짧은 패턴(4자 미만)은 4번 이상 반복될 때, 긴 패턴은 3번 이상 반복될 때 루프로 판단
-        required_repeats = 4 if pattern_len < 5 else 3
         if text_to_check.endswith(pattern * required_repeats):
             return True
             
@@ -58,6 +57,43 @@ def has_repetition(text: str) -> bool:
                 return True
                 
     return False
+
+
+def strip_repetition(text: str) -> str:
+    """
+    텍스트 뒷부분에서 발생하는 중복 반복 구간을 제거하여, 1회만 노출되도록 정리한 텍스트를 반환합니다.
+    """
+    if len(text) < 15:
+        return text
+        
+    text_to_check = text[-200:]
+    
+    # 1. 단어/구절 단위 반복 감지 및 제거
+    for pattern_len in range(2, 40):
+        required_repeats = 4 if pattern_len < 5 else 3
+        if len(text_to_check) < pattern_len * required_repeats:
+            continue
+        pattern = text_to_check[-pattern_len:]
+        
+        if not pattern.strip() or all(c in " .,!?\n*()[]_-" for c in pattern):
+            continue
+            
+        if text_to_check.endswith(pattern * required_repeats):
+            redundant_len = pattern_len * (required_repeats - 1)
+            if len(text) >= redundant_len:
+                return text[:-redundant_len]
+            
+    # 2. 개별 문자 반복 감지 및 제거
+    if len(text_to_check) >= 8:
+        last_char = text_to_check[-1]
+        if last_char not in (" ", "\n", ".", "-", "*", "~", ","):
+            if text_to_check[-8:] == last_char * 8:
+                redundant_len = 6 # 8개 중 6개 삭제하여 2개만 유지
+                if len(text) >= redundant_len:
+                    return text[:-redundant_len]
+                
+    return text
+
 
 
 def _clear_mlx_runtime():
@@ -138,24 +174,73 @@ class LiveStatus:
 
 def colorize_directives(text: str) -> str:
     """
-    대본에서 괄호 지시문 및 의성어/의태어 형태의 텍스트(예: [whispering], (한숨), *giggles*)를 감지하여
-    HTML span 태그를 통해 색상을 입혀 반환합니다.
+    대본에서 괄호 지시문, 의성어/의태어, 타임라인 및 등장인물의 대사 접두어를 감지하여
+    HTML span 태그를 통해 서로 다른 파스텔 색상을 입혀 반환합니다.
     """
     if not text:
         return ""
     # HTML 특수기호 안전 처리 (이스케이프)
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     
-    # 1. 대괄호 [속삭임], [whispering] -> 파스텔 오렌지 (#ffb86c)
+    # 1. 등장인물 이름 감지 및 일관성 있는 색상 맵 매핑
+    lines = text.split("\n")
+    unique_chars = set()
+    char_pattern = re.compile(r'^\s*([^:\s\n()[\]*?]{1,10})\s*[:：]')
+    
+    for line in lines:
+        match = char_pattern.match(line)
+        if match:
+            char_name = match.group(1).strip()
+            # 숫자로만 이루어져 있거나 시간 정보(예: 00)인 경우는 제외
+            if char_name and not char_name.isdigit() and len(char_name) > 0:
+                lower_name = char_name.lower()
+                # 트랙이나 씬 구분 식별자 제외
+                if any(k in lower_name for k in ("track", "part", "scene", "episode", "씬", "트랙", "파트")):
+                    continue
+                unique_chars.add(char_name)
+                
+    # 일관된 컬러 선택을 위한 알파벳 순 정렬
+    sorted_chars = sorted(list(unique_chars))
+    
+    # 프리미엄 파스텔 컬러 리스트 (다크 모드 가독성 고려)
+    char_colors = [
+        "#50fa7b", # 연두색
+        "#bd93f9", # 보라색
+        "#f1fa8c", # 노란색
+        "#ff5555", # 빨간색
+        "#8be9fd", # 하늘색
+        "#ff79c6", # 분홍색
+        "#ffb86c", # 주황색
+    ]
+    
+    char_color_map = {}
+    for idx, char_name in enumerate(sorted_chars):
+        char_color_map[char_name] = char_colors[idx % len(char_colors)]
+        
+    # 캐릭터 이름 색상화 적용
+    for i, line in enumerate(lines):
+        match = char_pattern.match(line)
+        if match:
+            char_name = match.group(1).strip()
+            if char_name in char_color_map:
+                color = char_color_map[char_name]
+                full_match_str = match.group(0)
+                colon_char = full_match_str[-1] # 콜론 기호 (: 또는 ：)
+                replacement = f'<span style="color: {color}; font-weight: bold;">{char_name}{colon_char}</span>'
+                lines[i] = char_pattern.sub(replacement, line, count=1)
+                
+    text = "\n".join(lines)
+    
+    # 2. 대괄호 [속삭임], [whispering] -> 파스텔 오렌지 (#ffb86c)
     text = re.sub(r'(\[[^\]\n]+\])', r'<span style="color: #ffb86c; font-weight: bold;">\1</span>', text)
     
-    # 2. 소괄호 (한숨), (sighs) -> 파스텔 핑크 (#ff79c6)
+    # 3. 소괄호 (한숨), (sighs) -> 파스텔 핑크 (#ff79c6)
     text = re.sub(r'(\([^)\n]+\))', r'<span style="color: #ff79c6; font-style: italic;">\1</span>', text)
     
-    # 3. 별표 *소곤소곤*, *giggles* -> 파스텔 민트/하늘 (#8be9fd)
+    # 4. 별표 *소곤소곤*, *giggles* -> 파스텔 민트/하늘 (#8be9fd)
     text = re.sub(r'(\*[^*\n]+\*)', r'<span style="color: #8be9fd; font-style: italic;">\1</span>', text)
     
-    # 4. SRT 타임라인 (00:00:01,000 --> 00:00:04,000) -> 흐린 회색 (#6272a4)
+    # 5. SRT 타임라인 (00:00:01,000 --> 00:00:04,000) -> 흐린 회색 (#6272a4)
     text = re.sub(r'(\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{3})', r'<span style="color: #6272a4; font-size: 12px; font-family: monospace;">\1</span>', text)
     
     return text
@@ -325,3 +410,19 @@ def extract_script_structure(script: str, file_name: str = "", max_chars_per_tra
     if len(result) > max_total_chars:
         result = result[:max_total_chars] + "\n... (전체 본문 제한으로 뒷부분 생략) ..."
     return result
+
+
+def trigger_streamlit_rerun(ctx):
+    """
+    백그라운드 스레드에서 Streamlit 메인 세션 재실행(Rerun)을 트리거합니다.
+    """
+    if not ctx:
+        return
+    try:
+        from streamlit.runtime import get_instance
+        runtime = get_instance()
+        session_info = runtime._session_mgr.get_active_session_info(ctx.session_id)
+        if session_info:
+            session_info.session.request_rerun(None)
+    except Exception:
+        pass

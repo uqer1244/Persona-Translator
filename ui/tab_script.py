@@ -223,6 +223,37 @@ def render_tab_script():
                             format_func=lambda x: os.path.relpath(x, local_path)
                         )
                         
+                    # Script Preview Expander
+                    with st.expander("🔍 스캔된 대본 파일 미리보기", expanded=False):
+                        if scripts_found:
+                            preview_file_path = st.selectbox(
+                                "미리볼 파일 선택",
+                                options=scripts_found,
+                                format_func=lambda x: os.path.relpath(x, local_path)
+                            )
+                            if preview_file_path:
+                                try:
+                                    preview_content = ""
+                                    if preview_file_path.endswith('.pdf'):
+                                        from core.translator import extract_text_from_pdf, clean_pdf_linebreaks
+                                        with open(preview_file_path, "rb") as pf:
+                                            preview_content = extract_text_from_pdf(pf)[:800]
+                                    else:
+                                        with open(preview_file_path, "rb") as pf:
+                                            raw_data = pf.read(1000)
+                                        for encoding in ('utf-8', 'cp949', 'latin1'):
+                                            try:
+                                                preview_content = raw_data.decode(encoding)[:800]
+                                                break
+                                            except UnicodeDecodeError:
+                                                continue
+                                    
+                                    st.code(preview_content, language="plaintext")
+                                except Exception as e:
+                                    st.error(f"미리보기를 불러올 수 없습니다: {e}")
+                        else:
+                            st.info("미리 볼 대본 파일이 없습니다.")
+                            
                     if st.button("선택한 로컬 파일들 불러오기", type="primary", width="stretch"):
                         # Combine scripts
                         combined_text = []

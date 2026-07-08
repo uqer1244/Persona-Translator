@@ -328,7 +328,7 @@ def stream_prompt(
 ) -> str | None:
     from mlx_vlm.generate import stream_generate
     from mlx_vlm.prompt_utils import apply_chat_template
-    from core.utils import has_repetition
+    from core.utils import has_repetition, strip_repetition
 
     messages = [{"role": "user", "content": prompt}]
     formatted_prompt = apply_chat_template(
@@ -361,7 +361,8 @@ def stream_prompt(
             
         if has_repetition(output):
             print(f"[TRANSLATION WARNING] Repetition loop detected! Stopping stream.")
-            raise ValueError("RepetitionLoopDetected")
+            cleaned_output = strip_repetition(output)
+            raise ValueError(f"RepetitionLoopDetected:{cleaned_output}")
 
     return clean_markdown(output)
 
@@ -374,7 +375,7 @@ def translate_one_chunk(
     repetition_penalty: float = 1.1,
     cancel_token: dict = None,
     token_callback=None,
-) -> str | None:
+) -> str | tuple[str, str] | None:
     try:
         result = stream_prompt(
             model,
@@ -387,7 +388,11 @@ def translate_one_chunk(
             token_callback=token_callback,
         )
     except ValueError as e:
-        if str(e) == "RepetitionLoopDetected":
+        err_msg = str(e)
+        if err_msg.startswith("RepetitionLoopDetected:"):
+            clean_part = err_msg[len("RepetitionLoopDetected:"):]
+            return ("__REPETITION_ERROR__", clean_part)
+        elif err_msg == "RepetitionLoopDetected":
             return "__REPETITION_ERROR__"
         raise e
 
@@ -457,6 +462,7 @@ def translate_script(
         
         max_retries = 3
         chunk_translation_clean = None
+        best_fallback_text = ""
         
         for retry in range(max_retries):
             current_temp = temp
@@ -471,7 +477,7 @@ def translate_script(
                 if progress_callback:
                     progress_callback(token_text, idx, total_chunks, chunk_translation, False)
 
-            chunk_translation_clean = translate_one_chunk(
+            res = translate_one_chunk(
                 model,
                 processor,
                 prompt,
@@ -481,19 +487,34 @@ def translate_script(
                 token_callback=on_token,
             )
 
-            if chunk_translation_clean == "__REPETITION_ERROR__":
+            if isinstance(res, tuple) and res[0] == "__REPETITION_ERROR__":
+                clean_part = res[1]
+                if len(clean_part) > len(best_fallback_text):
+                    best_fallback_text = clean_part
+                
+                if retry < max_retries - 1:
+                    continue
+                else:
+                    chunk_translation_clean = clean_markdown(best_fallback_text) if best_fallback_text.strip() else None
+                    break
+            elif res == "__REPETITION_ERROR__":
                 if retry < max_retries - 1:
                     continue
                 else:
                     chunk_translation_clean = None
                     break
-            elif chunk_translation_clean is None:
+            elif res is None:
+                # Cancelled
+                chunk_translation_clean = None
                 break
             else:
+                chunk_translation_clean = res
                 break
 
         if chunk_translation_clean is None:
-            break
+            if cancel_token and cancel_token.get("cancel"):
+                break
+            chunk_translation_clean = f"[번역 실패 - 원문 대체] {chunk}"
 
         translated_chunks.append(chunk_translation_clean)
         

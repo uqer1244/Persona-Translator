@@ -104,6 +104,42 @@ def render_tab_translate(params: dict):
         st.progress(progress_val)
         st.subheader(f"⏳ 전체 번역 진행 중 (청크 {curr_idx + 1} / {total_chunks})")
         
+        # 시간 경과 및 ETA 계산
+        import time
+        elapsed_sec = 0.0
+        eta_str = "계산 중..."
+        speed_str = "계산 중..."
+        
+        if "translate_start_time" in st.session_state:
+            elapsed_sec = time.time() - st.session_state.translate_start_time
+            if curr_idx > 0:
+                sec_per_chunk = elapsed_sec / curr_idx
+                speed_str = f"{sec_per_chunk:.1f}초/청크"
+                remaining_chunks = total_chunks - curr_idx
+                remaining_sec = sec_per_chunk * remaining_chunks
+                if remaining_sec > 60:
+                    eta_str = f"{int(remaining_sec // 60)}분 {int(remaining_sec % 60)}초"
+                else:
+                    eta_str = f"{int(remaining_sec)}초"
+            else:
+                speed_str = "첫 청크 처리 중..."
+                eta_str = "대기 중..."
+                
+        if elapsed_sec > 60:
+            elapsed_str = f"{int(elapsed_sec // 60)}분 {int(elapsed_sec % 60)}초"
+        else:
+            elapsed_str = f"{int(elapsed_sec)}초"
+            
+        col_time1, col_time2, col_time3 = st.columns(3)
+        with col_time1:
+            st.metric("⏱️ 진행 시간", elapsed_str)
+        with col_time2:
+            st.metric("⚡ 번역 속도", speed_str)
+        with col_time3:
+            st.metric("⏳ 남은 시간 (예상)", eta_str)
+        
+        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+        
         col_abort1, col_abort2 = st.columns([3, 1])
         with col_abort1:
             st.warning("일괄 번역이 실행 중입니다. 중지 버튼을 누르면 현재 진행 중인 구역의 작업은 저장되지 않고 멈춥니다.")
@@ -181,6 +217,8 @@ def render_tab_translate(params: dict):
                 LIVE_STATUS.current_chunk_idx = -1
                 LIVE_STATUS.current_streaming_text = ""
                 LIVE_STATUS.completed_translations = {}
+                import time
+                st.session_state.translate_start_time = time.time()
                 
                 file_name_captured = st.session_state.file_name
                 original_chunks_captured = list(st.session_state.chunks)
@@ -212,14 +250,8 @@ def render_tab_translate(params: dict):
                         LIVE_STATUS._last_rerun_time = 0
                     if now - LIVE_STATUS._last_rerun_time > 0.1 or is_finished:
                         LIVE_STATUS._last_rerun_time = now
-                        try:
-                            from streamlit.runtime import get_instance
-                            runtime = get_instance()
-                            session_info = runtime._session_mgr.get_active_session_info(ctx.session_id)
-                            if session_info:
-                                session_info.session.request_rerun(None)
-                        except Exception:
-                            pass
+                        from core.utils import trigger_streamlit_rerun
+                        trigger_streamlit_rerun(ctx)
 
                 st.session_state.batch_future = EXECUTOR.submit(
                     translate_with_context,
@@ -368,6 +400,7 @@ def render_tab_translate(params: dict):
 
                                         max_retries = 3
                                         clean_txt = None
+                                        best_fallback_text = ""
                                         for retry in range(max_retries):
                                             current_temp = temperature
                                             current_penalty = repetition_penalty
@@ -384,16 +417,10 @@ def render_tab_translate(params: dict):
                                                     LIVE_STATUS._last_rerun_time = 0
                                                 if now - LIVE_STATUS._last_rerun_time > 0.1:
                                                     LIVE_STATUS._last_rerun_time = now
-                                                    try:
-                                                        from streamlit.runtime import get_instance
-                                                        runtime = get_instance()
-                                                        session_info = runtime._session_mgr.get_active_session_info(ctx.session_id)
-                                                        if session_info:
-                                                            session_info.session.request_rerun(None)
-                                                    except Exception:
-                                                        pass
+                                                    from core.utils import trigger_streamlit_rerun
+                                                    trigger_streamlit_rerun(ctx)
 
-                                            clean_txt = translate_one_chunk(
+                                            res = translate_one_chunk(
                                                 model,
                                                 processor,
                                                 prompt,
@@ -402,19 +429,34 @@ def render_tab_translate(params: dict):
                                                 cancel_token=cancel_token,
                                                 token_callback=on_token,
                                             )
-                                            if clean_txt == "__REPETITION_ERROR__":
+                                            if isinstance(res, tuple) and res[0] == "__REPETITION_ERROR__":
+                                                clean_part = res[1]
+                                                if len(clean_part) > len(best_fallback_text):
+                                                    best_fallback_text = clean_part
+                                                
+                                                if retry < max_retries - 1:
+                                                    continue
+                                                else:
+                                                    from core.translator import clean_markdown
+                                                    clean_txt = clean_markdown(best_fallback_text) if best_fallback_text.strip() else None
+                                                    break
+                                            elif res == "__REPETITION_ERROR__":
                                                 if retry < max_retries - 1:
                                                     continue
                                                 else:
                                                     clean_txt = None
                                                     break
-                                            elif clean_txt is None:
+                                            elif res is None:
+                                                clean_txt = None
                                                 break
                                             else:
+                                                clean_txt = res
                                                 break
 
                                         if clean_txt is None:
-                                            return None
+                                            if cancel_token and cancel_token.get("cancel"):
+                                                return None
+                                            clean_txt = f"[번역 실패 - 원문 대체] {st.session_state.chunks[chunk_idx]}"
 
                                         LIVE_STATUS.single_completed_translations[chunk_idx] = clean_txt
                                         return clean_txt
