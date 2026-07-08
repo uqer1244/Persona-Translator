@@ -1,7 +1,6 @@
 import streamlit as st
-import os
 from core.utils import EXECUTOR, LiveStatus, colorize_directives, save_progress_backup
-from core.progress_store import save_progress, get_backup_path
+from core.progress_store import save_progress
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 def render_tab_translate(params: dict):
@@ -92,7 +91,14 @@ def render_tab_translate(params: dict):
     is_single_running = any(f is not None and not f.done() for f in st.session_state.single_futures.values())
 
     if total_chunks > 0:
-        st.info(f"전체 {total_chunks}개 청크 중 {translated_count}개 청크의 번역이 완료(임시저장)되었습니다.")
+        progress_ratio = translated_count / total_chunks
+        st.progress(progress_ratio)
+        col_p1, col_p2, col_p3 = st.columns(3)
+        col_p1.metric("전체 청크", f"{total_chunks:,}")
+        col_p2.metric("번역 완료", f"{translated_count:,}")
+        col_p3.metric("남은 청크", f"{total_chunks - translated_count:,}")
+    else:
+        st.info("아직 번역할 청크가 없습니다. 1번 탭에서 대본을 입력하거나 파일을 불러오면 번역 준비 상태가 표시됩니다.")
 
     # 3. 일괄 번역 진행바 및 중지 컨트롤
     if is_batch_running:
@@ -102,7 +108,7 @@ def render_tab_translate(params: dict):
         progress_val = min(1.0, max(0.0, (curr_idx) / total_chunks))
         
         st.progress(progress_val)
-        st.subheader(f"⏳ 전체 번역 진행 중 (청크 {curr_idx + 1} / {total_chunks})")
+        st.subheader(f"전체 번역 진행 중 (청크 {curr_idx + 1} / {total_chunks})")
         
         # 시간 경과 및 ETA 계산
         import time
@@ -132,11 +138,11 @@ def render_tab_translate(params: dict):
             
         col_time1, col_time2, col_time3 = st.columns(3)
         with col_time1:
-            st.metric("⏱️ 진행 시간", elapsed_str)
+            st.metric("진행 시간", elapsed_str)
         with col_time2:
-            st.metric("⚡ 번역 속도", speed_str)
+            st.metric("번역 속도", speed_str)
         with col_time3:
-            st.metric("⏳ 남은 시간 (예상)", eta_str)
+            st.metric("남은 시간 (예상)", eta_str)
         
         st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
         
@@ -169,9 +175,9 @@ def render_tab_translate(params: dict):
         # 번역 미실행 시 메인 컨트롤 노출
         col_act1, col_act2 = st.columns(2)
         with col_act1:
-            start_btn = st.button("번역 실행 / 이어서 번역", type="primary", width="stretch", disabled=is_single_running)
+            start_btn = st.button("번역 실행 / 이어서 번역", type="primary", width="stretch", disabled=is_single_running or total_chunks == 0)
         with col_act2:
-            reset_btn = st.button("번역 진행 상태 초기화", width="stretch", disabled=is_single_running)
+            reset_btn = st.button("번역 진행 상태 초기화", width="stretch", disabled=is_single_running or translated_count == 0)
             
         if reset_btn:
             if total_chunks > 0:
@@ -179,13 +185,10 @@ def render_tab_translate(params: dict):
                 st.session_state.translated_script = ""
                 for idx in range(total_chunks):
                     st.session_state[f"chunk_trans_{idx}"] = ""
-                backup_path = get_backup_path(st.session_state.file_name)
-                if os.path.exists(backup_path):
-                    try:
-                        import shutil
-                        shutil.rmtree(os.path.dirname(backup_path))
-                    except Exception:
-                        pass
+                save_progress(
+                    st.session_state.file_name,
+                    st.session_state.chunks,
+                    st.session_state.translated_chunks)
                 st.success("진행 상태가 초기화되었습니다.")
                 st.rerun()
 
@@ -238,8 +241,7 @@ def render_tab_translate(params: dict):
                                 save_progress(
                                     file_name_captured,
                                     original_chunks_captured,
-                                    translated_chunks_snapshot,
-                                )
+                                    translated_chunks_snapshot)
                         except Exception:
                             pass
 
@@ -280,10 +282,13 @@ def render_tab_translate(params: dict):
         temp_chunks[LIVE_STATUS.current_chunk_idx] = clean_markdown(LIVE_STATUS.current_streaming_text)
     
     full_text = "\n\n".join([c for c in temp_chunks if c])
-    st.markdown(
-        f'<div style="border: 1px solid #31333f; padding: 20px; border-radius: 8px; background-color: #0e1117; color: #f0f2f6; white-space: pre-wrap; font-size: 14px; height: 300px; overflow-y: auto;">{colorize_directives(full_text)}</div>',
-        unsafe_allow_html=True
-    )
+    if full_text.strip():
+        st.markdown(
+            f'<div style="border: 1px solid #31333f; padding: 20px; border-radius: 8px; background-color: #0e1117; color: #f0f2f6; white-space: pre-wrap; font-size: 14px; height: 300px; overflow-y: auto;">{colorize_directives(full_text)}</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.caption("번역이 시작되면 이 영역에 누적 결과가 표시됩니다.")
 
     # 5. 개별 청크 상세 관리 및 부분 번역/재번역
     if total_chunks > 0:
@@ -337,9 +342,9 @@ def render_tab_translate(params: dict):
                         
                         # 3. 진행 상황 확인 (상태 라벨 표시)
                         if is_this_single_active or is_batch_active_on_this:
-                            st.info("⏳ 번역 진행 중")
+                            st.info("번역 진행 중")
                         elif has_translation:
-                            st.success("✅ 번역 완료")
+                            st.success("번역 완료")
                         else:
                             st.light = st.caption("대기 중")
                             
@@ -427,8 +432,7 @@ def render_tab_translate(params: dict):
                                                 temp=current_temp,
                                                 repetition_penalty=current_penalty,
                                                 cancel_token=cancel_token,
-                                                token_callback=on_token,
-                                            )
+                                                token_callback=on_token)
                                             if isinstance(res, tuple) and res[0] == "__REPETITION_ERROR__":
                                                 clean_part = res[1]
                                                 if len(clean_part) > len(best_fallback_text):
@@ -496,8 +500,7 @@ def clear_chunk_callback(idx):
         save_progress(
             st.session_state.file_name,
             st.session_state.chunks,
-            st.session_state.translated_chunks,
-        )
+            st.session_state.translated_chunks)
         is_srt = st.session_state.file_name.endswith(".srt")
         if is_srt:
             st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])

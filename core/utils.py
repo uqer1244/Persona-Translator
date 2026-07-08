@@ -24,6 +24,45 @@ def get_executor():
 EXECUTOR = get_executor()
 
 
+def natural_sort_key(s: str) -> list:
+    """
+    Sort key function for natural sorting (e.g. track1, track2, track10).
+    """
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)]
+
+
+def decode_text(raw_data: bytes) -> str:
+    """
+    Decodes raw bytes into a string by trying common encodings and falling back to UTF-8 with replacement.
+    """
+    # 1. Try UTF-8 (with BOM check)
+    try:
+        return raw_data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+
+    # 2. Try Shift_JIS / CP932 (Japanese ASMR scripts)
+    try:
+        return raw_data.decode("cp932")
+    except UnicodeDecodeError:
+        pass
+
+    # 3. Try CP949 / EUC-KR (Korean)
+    try:
+        return raw_data.decode("cp949")
+    except UnicodeDecodeError:
+        pass
+
+    # 4. Try UTF-16
+    try:
+        return raw_data.decode("utf-16")
+    except UnicodeDecodeError:
+        pass
+
+    # 5. Robust fallback: UTF-8 with errors replaced, avoiding complete mojibake from latin1
+    return raw_data.decode("utf-8", errors="replace")
+
+
 def has_repetition(text: str) -> bool:
     """
     체크할 텍스트 뒷부분에서 중복되는 패턴이 연속으로 발생하는지 감지합니다.

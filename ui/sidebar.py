@@ -34,7 +34,7 @@ def render_sidebar() -> dict:
         if selected_option == "직접 경로 입력...":
             model_path = st.text_input(
                 "모델 폴더 절대 경로 또는 Hugging Face ID", 
-                value=os.path.abspath("./models/gemma-4-12B-it-8bit"),
+                value=os.path.abspath("./models/Gemma4_12B_4bit_mlx"),
                 disabled=is_running
             )
         else:
