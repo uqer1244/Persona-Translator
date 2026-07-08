@@ -1,156 +1,33 @@
 import re
 from pypdf import PdfReader
 
-def extract_text_from_pdf(pdf_file) -> str:
-    """
-    PDF 파일에서 텍스트를 추출합니다.
-    """
-    reader = PdfReader(pdf_file)
-    text_list = []
-    for page in reader.pages:
-        text = page.extract_text()
-        if text:
-            text_list.append(text)
-    return "\n".join(text_list)
 
-def clean_pdf_linebreaks(text: str) -> str:
+def extract_final_translation(text: str) -> str:
     """
-    세로쓰기 또는 PDF 레이아웃 문제로 인해 잘게 쪼개진 줄바꿈을 문장 단위로 자동 병합합니다.
+    Extracts only the final translation part from the VLM output by stripping the thinking process.
     """
     if not text:
         return ""
-    
-    # 윈도우 스타일 개행문자 통일
-    text = text.replace("\r\n", "\n")
-    lines = [line.strip() for line in text.split("\n")]
-    result_lines = []
-    current_line = ""
-    
-    for line in lines:
-        if not line:
-            # 빈 줄은 단락 구분이므로 기존 모은 라인을 배출하고 빈 줄 유지
-            if current_line:
-                result_lines.append(current_line)
-                current_line = ""
-            result_lines.append("")
-            continue
+    markers = ["[최종 번역 결과]", "[최종 번역 대본]", "[최종 번역]", "[번역 결과]", "[최종 번역본]"]
+    for marker in markers:
+        if marker in text:
+            parts = text.split(marker)
+            return parts[-1].strip()
             
-        # 자막 타임라인이나 숫자로 시작하는 인덱스는 합치지 않고 개별 행으로 보존
-        if re.match(r'^\d+$', line) or re.search(r'\d{2}:\d{2}:\d{2}', line):
-            if current_line:
-                result_lines.append(current_line)
-                current_line = ""
-            result_lines.append(line)
-            continue
-            
-        if not current_line:
-            current_line = line
-        else:
-            # 이전 라인이 마침표(., 。, ? , !) 또는 괄호 닫기(」, 』, ), ], })로 끝나면 새로운 문장으로 보고 줄바꿈 유지
-            if re.search(r'[.!?。？！」』\)\}\]\*]$', current_line):
-                result_lines.append(current_line)
-                current_line = line
-            else:
-                # 한국어/일본어 문맥인 경우 공백 없이 합치고, 영어나 서양어 문맥이면 공백 하나를 두고 합칩니다.
-                has_asian = any('\u3000' <= char <= '\u9fff' or '\uac00' <= char <= '\ud7a3' for char in current_line + line)
-                if has_asian:
-                    current_line += line
-                else:
-                    current_line += " " + line
-                    
-    if current_line:
-        result_lines.append(current_line)
+    # If no final marker is present yet, but it contains "[대본 분석]" or "[대본 분석", hide it during streaming
+    if "[대본 분석]" in text or "[대본 분석" in text or "요소 분류" in text or "번역 계획" in text:
+        return ""
         
-    # 빈 줄이 연속으로 3개 이상 나타나면 2개로 압축
-    final_text = "\n".join(result_lines)
-    final_text = re.sub(r'\n{3,}', '\n\n', final_text)
-    return final_text
-
-def is_scene_boundary(line: str) -> bool:
-    line_strip = line.strip()
-    if not line_strip:
-        return False
-    # 1. Track 또는 트랙 시작
-    if re.match(r'^(Track|track|트랙)\s*\d+', line_strip):
-        return True
-    # 2. [SE: ...] 또는 [BGM: ...] 또는 [bgm: ...] 등 대괄호 안의 제어 명령
-    if re.match(r'^\[(SE|BGM|se|bgm|Track|track|트랙):?.*\]', line_strip):
-        return True
-    # 3. 시간대 인덱스 (자막 타임라인 제외)
-    if re.match(r'^\[\d{2}:\d{2}\]$', line_strip) or re.match(r'^\d{2}:\d{2}$', line_strip):
-        return True
-    return False
-
-def chunk_text(text: str, chunk_size: int = 800, min_chunk_size: int = 300) -> list[str]:
-    """
-    일반 텍스트를 장면 경계(SE/Track 등) 및 글자 수 제한을 고려하여 지능적으로 분할합니다.
-    """
-    text = text.replace("\r\n", "\n")
-    paragraphs = text.split("\n")
-    chunks = []
-    current_chunk = []
-    current_length = 0
-    
-    for para in paragraphs:
-        para_len = len(para) + 1
-        is_boundary = is_scene_boundary(para)
-        
-        # 장면 경계이고 현재 청크에 일정 정보가 쌓였을 때 분할하여 문맥 보존
-        if is_boundary and current_length >= min_chunk_size and current_chunk:
-            chunks.append("\n".join(current_chunk))
-            current_chunk = [para]
-            current_length = para_len
-        elif current_length + para_len > chunk_size and current_chunk:
-            chunks.append("\n".join(current_chunk))
-            current_chunk = [para]
-            current_length = para_len
-        else:
-            current_chunk.append(para)
-            current_length += para_len
-            
-    if current_chunk:
-        chunks.append("\n".join(current_chunk))
-        
-    return chunks
-
-def chunk_srt(srt_text: str, target_chunk_size: int = 800) -> list[str]:
-    """
-    SRT 자막 블록들을 합산 글자 수가 target_chunk_size 내외가 되도록 동적으로 묶어 청킹합니다.
-    """
-    srt_text = srt_text.replace("\r\n", "\n")
-    raw_blocks = re.split(r'\n\s*\n', srt_text.strip())
-    
-    chunks = []
-    current_blocks = []
-    current_length = 0
-    
-    for block in raw_blocks:
-        block_strip = block.strip()
-        if not block_strip:
-            continue
-            
-        block_len = len(block_strip) + 2
-        if current_length + block_len > target_chunk_size and current_blocks:
-            chunks.append("\n\n".join(current_blocks))
-            current_blocks = [block_strip]
-            current_length = block_len
-        else:
-            current_blocks.append(block_strip)
-            current_length += block_len
-            
-    if current_blocks:
-        chunks.append("\n\n".join(current_blocks))
-        
-    return chunks
-
-def clean_markdown(text: str) -> str:
-    """
-    LLM 응답에서 마크다운 코드 블록 지시어(```srt, ```text 등)를 제거합니다.
-    """
-    text = text.strip()
-    text = re.sub(r"^```[a-zA-Z]*\n", "", text)
-    text = re.sub(r"\n```$", "", text)
     return text.strip()
+
+
+from core.document import (
+    extract_text_from_pdf,
+    clean_pdf_linebreaks,
+    clean_markdown,
+    chunk_srt,
+    chunk_text
+)
 
 def build_translation_prompt(
     current_chunk: str,
@@ -193,10 +70,11 @@ def build_translation_prompt(
         format_instruction = """
 [형식 규칙]
 - 대본의 타임스탬프(예: [00:12], 01:23)는 절대 수정하지 말고 원본 위치 그대로 유지하세요.
-- 괄호 안에 들어있는 지시문(예: [whispering], (한숨), *giggles*)은 지시문 기호 형태(괄호 종류 등)를 그대로 유지하세요.
+- 괄호 안에 들어있는 지시문(예: [whispering], (한숨), *giggles* 및 전각 기호 ［속삭임］, （한숨）, ＊소곤소곤＊)은 지시문 기호 형태(괄호 종류 등)를 그대로 유지하세요.
+- 원본 대본의 행 단위 구조(라인 바이 라인)를 철저히 지키십시오. 절대 대본을 소설이나 줄글(예: '히로인이 한숨을 쉬며 말했다' 등)로 통합하여 문장 형태로 풀어서 쓰지 말고, 원본의 '화자: 대사' 구조를 그대로 유지해야 합니다.
 """
         if translate_directives:
-            format_instruction += "- 괄호 내부의 지시문 내용은 한국어 감정/행동 묘사로 자연스럽게 번역하세요 (예: [whispering] -> [속삭임], (sighs) -> (한숨)).\n"
+            format_instruction += "- 괄호 내부의 지시문 내용은 한국어 감정/행동 묘사로 자연스럽게 번역하세요 (예: [whispering] -> [속삭임], (sighs) -> (한숨), ［whispering］ -> ［속삭임］).\n"
         else:
             format_instruction += "- 괄호 내부의 지시문 내용은 번역하지 말고 영문 또는 원문 단어 그대로 유지하세요 (예: [whispering] -> [whispering]).\n"
 
@@ -220,6 +98,19 @@ def build_translation_prompt(
 {persona_str}
 {glossary_str}
 {format_instruction}
+
+[번역 사고 가이드라인 (중요 - 반드시 아래 출력 포맷을 엄격히 지켜 출력하십시오)]
+반드시 다음 두 섹션으로 나누어 출력해야 하며, 다른 인삿말이나 설명글은 일절 배제하십시오.
+
+[대본 분석]
+- 번역할 대본의 각 행(Line)이 대사, 연출 지시문/상황어(괄호 안의 텍스트), 효과음(별표 사이), 혹은 무대 설명문 등인지 분석하고 분류하여 한국어로 짤막하게 매칭 관계를 서술하십시오. (예: "1행: [효과음] 바람 소리", "2행: [히로인A 대사] 대사 내용")
+- 화자가 여러 명인 경우, 이 행에서 말하는 인물이 누구인지 명확히 구분하여 분류하십시오.
+
+[최종 번역 결과]
+- 위 분석을 바탕으로 번역된 최종 한국어 대본 본문을 출력하십시오.
+- 원문의 줄바꿈 구조 및 특수 문자, 괄호 기호 형태(대괄호 [ ] 및 ［ ］, 소괄호 ( ) 및 （ ）, 별표 * * 및 ＊ ＊), 화자 콜론 기호(: 또는 ：) 등 모든 대본 포맷을 그대로 유지해야 합니다.
+- 절대 대본 형식을 일반 소설 서술형 문장(예: ~라고 말했다)으로 풀어서 합치지 마십시오.
+
 {context_str}
 [번역할 대본]
 {current_chunk}
@@ -272,10 +163,11 @@ def build_retranslation_prompt(
         format_instruction = """
 [형식 규칙]
 - 대본의 타임스탬프(예: [00:12], 01:23)는 절대 수정하지 말고 원본 위치 그대로 유지하세요.
-- 괄호 안에 들어있는 지시문(예: [whispering], (한숨), *giggles*)은 지시문 기호 형태(괄호 종류 등)를 그대로 유지하세요.
+- 괄호 안에 들어있는 지시문(예: [whispering], (한숨), *giggles* 및 전각 기호 ［속삭임］, （한숨）, ＊소곤소곤＊)은 지시문 기호 형태(괄호 종류 등)를 그대로 유지하세요.
+- 원본 대본의 행 단위 구조(라인 바이 라인)를 철저히 지키십시오. 절대 대본을 소설이나 줄글(예: '히로인이 한숨을 쉬며 말했다' 등)로 통합하여 문장 형태로 풀어서 쓰지 말고, 원본의 '화자: 대사' 구조를 그대로 유지해야 합니다.
 """
         if translate_directives:
-            format_instruction += "- 괄호 내부의 지시문 내용은 한국어 감정/행동 묘사로 자연스럽게 번역하세요 (예: [whispering] -> [속삭임], (sighs) -> (한숨)).\n"
+            format_instruction += "- 괄호 내부의 지시문 내용은 한국어 감정/행동 묘사로 자연스럽게 번역하세요 (예: [whispering] -> [속삭임], (sighs) -> (한숨), ［whispering］ -> ［속삭임］).\n"
         else:
             format_instruction += "- 괄호 내부의 지시문 내용은 번역하지 말고 영문 또는 원문 단어 그대로 유지하세요 (예: [whispering] -> [whispering]).\n"
 
@@ -299,6 +191,19 @@ def build_retranslation_prompt(
 {persona_str}
 {glossary_str}
 {format_instruction}
+
+[번역 사고 가이드라인 (중요 - 반드시 아래 출력 포맷을 엄격히 지켜 출력하십시오)]
+반드시 다음 두 섹션으로 나누어 출력해야 하며, 다른 인삿말이나 설명글은 일절 배제하십시오.
+
+[대본 분석]
+- 번역할 대본의 각 행(Line)이 대사, 연출 지시문/상황어(괄호 안의 텍스트), 효과음(별표 사이), 혹은 무대 설명문 등인지 분석하고 분류하여 한국어로 짤막하게 매칭 관계를 서술하십시오. (예: "1행: [효과음] 바람 소리", "2행: [히로인A 대사] 대사 내용")
+- 화자가 여러 명인 경우, 이 행에서 말하는 인물이 누구인지 명확히 구분하여 분류하십시오.
+
+[최종 번역 결과]
+- 위 분석을 바탕으로 번역된 최종 한국어 대본 본문을 출력하십시오.
+- 원문의 줄바꿈 구조 및 특수 문자, 괄호 기호 형태(대괄호 [ ] 및 ［ ］, 소괄호 ( ) 및 （ ）, 별표 * * 및 ＊ ＊), 화자 콜론 기호(: 또는 ：) 등 모든 대본 포맷을 그대로 유지해야 합니다.
+- 절대 대본 형식을 일반 소설 서술형 문장(예: ~라고 말했다)으로 풀어서 합치지 마십시오.
+
 {context_str}
 
 [기존 번역 초안 (참고용 - 말투 및 오역 수정 대상)]
@@ -349,7 +254,8 @@ def stream_prompt(
         kv_bits=3.5,
         kv_quant_scheme="turboquant",
         repetition_penalty=repetition_penalty,
-        repetition_context_size=100
+        repetition_context_size=100,
+        seed=42,
     )
 
     for response in generator:
@@ -515,6 +421,8 @@ def translate_script(
             if cancel_token and cancel_token.get("cancel"):
                 break
             chunk_translation_clean = f"[번역 실패 - 원문 대체] {chunk}"
+        else:
+            chunk_translation_clean = extract_final_translation(chunk_translation_clean)
 
         translated_chunks.append(chunk_translation_clean)
         

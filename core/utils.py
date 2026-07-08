@@ -135,73 +135,7 @@ def strip_repetition(text: str) -> str:
 
 
 
-def _clear_mlx_runtime():
-    try:
-        import gc
-        import mlx.core as mx
-
-        mx.clear_cache()
-        gc.collect()
-    except Exception:
-        pass
-
-
-def cleanup_runtime_resources(shutdown_executor: bool = False):
-    global _RUNTIME_CLEANED_UP
-    if _RUNTIME_CLEANED_UP:
-        return
-
-    try:
-        load_model_cached.clear()
-    except Exception:
-        pass
-
-    _clear_mlx_runtime()
-
-    if shutdown_executor:
-        try:
-            EXECUTOR.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            pass
-
-    _RUNTIME_CLEANED_UP = True
-
-
-def _install_shutdown_hooks():
-    global _SIGNAL_HANDLERS_INSTALLED
-    if _SIGNAL_HANDLERS_INSTALLED:
-        return
-
-    atexit.register(lambda: cleanup_runtime_resources(shutdown_executor=True))
-
-    try:
-        import signal
-        import sys
-
-        previous_handlers = {
-            signal.SIGINT: signal.getsignal(signal.SIGINT),
-            signal.SIGTERM: signal.getsignal(signal.SIGTERM),
-        }
-
-        def handle_shutdown(signum, frame):
-            cleanup_runtime_resources(shutdown_executor=True)
-            previous = previous_handlers.get(signum)
-            if callable(previous):
-                previous(signum, frame)
-            elif signum == signal.SIGINT:
-                raise KeyboardInterrupt
-            else:
-                sys.exit(0)
-
-        signal.signal(signal.SIGINT, handle_shutdown)
-        signal.signal(signal.SIGTERM, handle_shutdown)
-    except Exception:
-        pass
-
-    _SIGNAL_HANDLERS_INSTALLED = True
-
-
-_install_shutdown_hooks()
+# Note: Model management resources and shutdown hooks are now initialized in core.model_manager
 
 class LiveStatus:
     def __init__(self):
@@ -224,7 +158,7 @@ def colorize_directives(text: str) -> str:
     # 1. 등장인물 이름 감지 및 일관성 있는 색상 맵 매핑
     lines = text.split("\n")
     unique_chars = set()
-    char_pattern = re.compile(r'^\s*([^:\s\n()[\]*?]{1,10})\s*[:：]')
+    char_pattern = re.compile(r'^\s*([^:\s\n()[\]*?［］（）「」『』＊]{1,10})\s*([:：]|[「『])')
     
     for line in lines:
         match = char_pattern.match(line)
@@ -263,21 +197,20 @@ def colorize_directives(text: str) -> str:
             char_name = match.group(1).strip()
             if char_name in char_color_map:
                 color = char_color_map[char_name]
-                full_match_str = match.group(0)
-                colon_char = full_match_str[-1] # 콜론 기호 (: 또는 ：)
-                replacement = f'<span style="color: {color}; font-weight: bold;">{char_name}{colon_char}</span>'
-                lines[i] = char_pattern.sub(replacement, line, count=1)
+                delimiter = match.group(2) # 콜론 기호 (: 또는 ：) 또는 따옴표 기호 (「 또는 『)
+                replacement = f'<span style="color: {color}; font-weight: bold;">{char_name}</span>{delimiter}'
+                lines[i] = replacement + line[match.end():]
                 
     text = "\n".join(lines)
     
-    # 2. 대괄호 [속삭임], [whispering] -> 파스텔 오렌지 (#ffb86c)
-    text = re.sub(r'(\[[^\]\n]+\])', r'<span style="color: #ffb86c; font-weight: bold;">\1</span>', text)
+    # 2. 대괄호 [속삭임], [whispering], ［속삭임］ -> 파스텔 오렌지 (#ffb86c)
+    text = re.sub(r'([\[［][^\]］\n]+[\]］])', r'<span style="color: #ffb86c; font-weight: bold;">\1</span>', text)
     
-    # 3. 소괄호 (한숨), (sighs) -> 파스텔 핑크 (#ff79c6)
-    text = re.sub(r'(\([^)\n]+\))', r'<span style="color: #ff79c6; font-style: italic;">\1</span>', text)
+    # 3. 소괄호 (한숨), (sighs), （한숨） -> 파스텔 핑크 (#ff79c6)
+    text = re.sub(r'([\([（][^)）\n]+[\)）])', r'<span style="color: #ff79c6; font-style: italic;">\1</span>', text)
     
-    # 4. 별표 *소곤소곤*, *giggles* -> 파스텔 민트/하늘 (#8be9fd)
-    text = re.sub(r'(\*[^*\n]+\*)', r'<span style="color: #8be9fd; font-style: italic;">\1</span>', text)
+    # 4. 별표 *소곤소곤*, *giggles*, ＊소곤소곤＊ -> 파스텔 민트/하늘 (#8be9fd)
+    text = re.sub(r'([\*＊][^*＊\n]+[\*＊])', r'<span style="color: #8be9fd; font-style: italic;">\1</span>', text)
     
     # 5. SRT 타임라인 (00:00:01,000 --> 00:00:04,000) -> 흐린 회색 (#6272a4)
     text = re.sub(r'(\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{3})', r'<span style="color: #6272a4; font-size: 12px; font-family: monospace;">\1</span>', text)
@@ -359,41 +292,7 @@ def sync_chunks(chunk_size):
         # 로컬 백업이 존재하면 이어서 번역할 수 있도록 로드 시도
         load_progress_backup(st.session_state.file_name)
 
-# Lazy loading model
-@st.cache_resource
-def load_model_cached(model_path: str):
-    def _load():
-        import mlx.core as mx
-        import gc
-        # 로딩 전 메모리 비우기
-        mx.clear_cache()
-        gc.collect()
-        
-        # 메탈 캐시 한계를 0으로 설정하여 캐시 메모리 즉시 반환 유도
-        mx.set_cache_limit(0)
-        
-        from mlx_vlm import load
-        model, processor = load(model_path)
-        
-        # 로딩 후 정리
-        mx.clear_cache()
-        gc.collect()
-        return model, processor
-    
-    # MLX 가동용 단일 스레드 스레드풀에서 모델 로드 실행
-    future = EXECUTOR.submit(_load)
-    return future.result()
-
-
-def unload_model():
-    st.session_state.model = None
-    st.session_state.processor = None
-    st.session_state.model_loaded = False
-    try:
-        load_model_cached.clear()
-    except Exception:
-        pass
-    _clear_mlx_runtime()
+from core.model_manager import load_model_cached, unload_model
 
 def extract_script_structure(script: str, file_name: str = "", max_chars_per_track: int = 1200, max_total_chars: int = 8000) -> str:
     if not script:

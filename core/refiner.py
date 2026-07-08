@@ -1,15 +1,5 @@
-from core.translator import chunk_text, clean_markdown
-
-
-def _clear_mlx_cache():
-    try:
-        import gc
-        import mlx.core as mx
-
-        mx.clear_cache()
-        gc.collect()
-    except Exception:
-        pass
+from core.document import chunk_text, clean_markdown
+from core.model_manager import clear_mlx_cache as _clear_mlx_cache
 
 
 def _refine_chunk(model, processor, translated_text: str, persona: dict, chunk_idx: int, total_chunks: int) -> str:
@@ -53,6 +43,7 @@ def _refine_chunk(model, processor, translated_text: str, persona: dict, chunk_i
             kv_quant_scheme="turboquant",
             repetition_penalty=1.1,
             repetition_context_size=100,
+            seed=42,
         )
         return clean_markdown(refined_output_obj.text)
     finally:

@@ -81,6 +81,7 @@ def render_sidebar() -> dict:
         repetition_penalty = st.slider("Repetition Penalty (반복 억제력)", 1.0, 1.5, 1.1, step=0.05, disabled=is_running)
         chunk_size = st.slider("청크 크기 (글자 수 기준)", 300, 1500, 800, step=50, disabled=is_running)
         translate_directives = st.checkbox("괄호 안 지시문 번역 ([whispering] -> [속삭임])", value=True, disabled=is_running)
+        enable_coloring = st.checkbox("실시간 대본 채색 활성화 (지시문/화자 하이라이트)", value=True)
 
     # Sync chunks with original script
     sync_chunks(chunk_size)
@@ -89,5 +90,6 @@ def render_sidebar() -> dict:
         "temperature": temperature,
         "repetition_penalty": repetition_penalty,
         "chunk_size": chunk_size,
-        "translate_directives": translate_directives
+        "translate_directives": translate_directives,
+        "enable_coloring": enable_coloring
     }

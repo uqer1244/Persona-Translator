@@ -59,6 +59,7 @@ def _generate_text(
             kv_quant_scheme="turboquant",
             repetition_penalty=current_penalty,
             repetition_context_size=100,
+            seed=42,
         )
 
         loop_detected = False
@@ -75,15 +76,7 @@ def _generate_text(
     return output
 
 
-def _clear_mlx_cache():
-    try:
-        import gc
-        import mlx.core as mx
-
-        mx.clear_cache()
-        gc.collect()
-    except Exception:
-        pass
+from core.model_manager import clear_mlx_cache as _clear_mlx_cache
 
 
 def _parse_json_response(response: str) -> dict:
@@ -245,18 +238,16 @@ def analyze_persona(model, processor, metadata_text: str, script_preview: str, i
     image_section = f"\n[소개 이미지 분석 노트]\n{image_notes}\n" if image_notes else ""
 
     prompt = f"""
-ASMR 대본의 설명란 텍스트(메타데이터), 대본 본문 일부, 소개 이미지 분석 노트를 종합하여 상황극 번역에 필요한 캐릭터 페르소나 정보만 추출해주세요.
+ASMR 대본의 설명란 텍스트(메타데이터), 대본 본문 일부, 소개 이미지 분석 노트를 종합하여 상황극 번역에 필요한 캐릭터 페르소나 정보만 추출해주세요. (만약 대본에 등장하는 주요 화자가 2명 이상인 경우, 각 화자들의 페르소나 정보를 모두 빠짐없이 추출해 내야 합니다.)
 결과는 반드시 아래의 JSON 형식으로만 작성해야 하며, 다른 설명이나 인삿말은 생략하세요.
 
 [JSON 형식]
 {{
-  "tone": "캐릭터의 말투와 어조 (예: 부드러운 반말, 끝처리를 흐리는 말투, 독점욕 있는 어조 등)",
-  "relationship": "화자와 청자의 관계 (예: 오래된 연인 사이, 소꿉친구 등)",
+  "tone": "캐릭터의 말투와 어조 (만약 등장하는 화자가 2명 이상인 경우, 각 화자별 말투를 '화자A: 어조 / 화자B: 어조'와 같이 명시하여 각각 적어주세요. 예: 히로인: 부드러운 반말)",
+  "relationship": "화자와 청자의 관계 (화자가 여러 명이면 각각의 관계를 구분해서 적어주세요. 예: 히로인A-청자: 오래된 연인, 히로인B-청자: 직장 동료)",
   "situation": "전체 배경 상황 및 스토리 맥락 요약 (예: 주인공이 청자를 간호하며 위로해주는 상황)",
   "key_rules": [
-    "번역 시 반드시 지켜야 할 어조 및 단어 선택 규칙 1",
-    "규칙 2",
-    "규칙 3 (최대 5개)"
+    "각 화자별 번역 규칙 또는 공통 규칙 (예: '히로인A의 대사는 반드시 존댓말로 번역', '히로인B의 대사는 반말로 어리광 부리듯 번역' 등 최대 5개)"
   ]
 }}
 

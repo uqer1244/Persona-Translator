@@ -204,10 +204,13 @@ def render_tab_script():
                 # Scan directory
                 files_in_dir = []
                 for root, dirs, filenames in os.walk(local_path):
-                    # Exclude backend-created directories
-                    dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('translation_backup', 'temp_backups')]
+                    # Exclude backend-created directories (including images subfolder created by progress_store)
+                    dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('translation_backup', 'temp_backups', 'images')]
                     for f in filenames:
                         if not f.startswith('.'):
+                            # Exclude backend-created config/progress files
+                            if f in ('progress.json', 'persona.json'):
+                                continue
                             base, ext = os.path.splitext(f)
                             # Exclude files ending with '_translated' (created by this backend)
                             if not base.lower().endswith('_translated'):
@@ -252,7 +255,7 @@ def render_tab_script():
                                 try:
                                     preview_content = ""
                                     if preview_file_path.endswith('.pdf'):
-                                        from core.translator import extract_text_from_pdf, clean_pdf_linebreaks
+                                        from core.document import extract_text_from_pdf, clean_pdf_linebreaks
                                         with open(preview_file_path, "rb") as pf:
                                             preview_content = extract_text_from_pdf(pf)[:800]
                                     else:
@@ -275,7 +278,7 @@ def render_tab_script():
                         for idx, file_path in enumerate(sorted_local_scripts):
                             base_filename = os.path.basename(file_path)
                             if file_path.endswith('.pdf'):
-                                from core.translator import extract_text_from_pdf, clean_pdf_linebreaks
+                                from core.document import extract_text_from_pdf, clean_pdf_linebreaks
                                 with open(file_path, "rb") as f:
                                     extracted_text = extract_text_from_pdf(f)
                                 if clean_pdf_breaks:
@@ -325,7 +328,8 @@ def render_tab_script():
                             os.makedirs(images_dir, exist_ok=True)
 
                             temp_image_paths = []
-                            for i_idx, img_path in enumerate(selected_local_images):
+                            sorted_local_images = sorted(selected_local_images, key=lambda x: natural_sort_key(os.path.basename(x)))
+                            for i_idx, img_path in enumerate(sorted_local_images):
                                 with open(img_path, "rb") as f:
                                     raw_image = f.read()
                                 import hashlib
@@ -390,7 +394,8 @@ def render_tab_script():
         os.makedirs(images_dir, exist_ok=True)
 
         temp_image_paths = []
-        for idx, img_file in enumerate(uploaded_images):
+        sorted_uploaded_images = sorted(uploaded_images, key=lambda x: natural_sort_key(x.name))
+        for idx, img_file in enumerate(sorted_uploaded_images):
             raw_image = img_file.read()
             import hashlib
 
@@ -444,7 +449,7 @@ def render_tab_script():
             for idx, file in enumerate(sorted_files):
                 file_name = file.name
                 if file_name.endswith('.pdf'):
-                    from core.translator import extract_text_from_pdf, clean_pdf_linebreaks
+                    from core.document import extract_text_from_pdf, clean_pdf_linebreaks
                     extracted_text = extract_text_from_pdf(file)
                     if clean_pdf_breaks:
                         extracted_text = clean_pdf_linebreaks(extracted_text)
@@ -529,7 +534,7 @@ def render_tab_script():
         disabled=not st.session_state.original_script.strip()
     ):
         if st.session_state.original_script.strip():
-            from core.translator import clean_pdf_linebreaks
+            from core.document import clean_pdf_linebreaks
             cleaned = clean_pdf_linebreaks(st.session_state.original_script)
             st.session_state.original_script = cleaned
             st.success("대본 본문의 줄바꿈 정제를 완료했습니다!")

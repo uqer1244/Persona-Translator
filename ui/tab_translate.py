@@ -165,9 +165,14 @@ def render_tab_translate(params: dict):
             st.info(curr_orig_text)
         with col_trans_live:
             st.markdown("##### 실시간 로컬 LLM 스트리밍")
-            colorized_stream = colorize_directives(LIVE_STATUS.current_streaming_text)
+            import html
+            raw_stream = LIVE_STATUS.current_streaming_text
+            if params.get("enable_coloring", True):
+                display_stream = colorize_directives(raw_stream)
+            else:
+                display_stream = html.escape(raw_stream)
             st.markdown(
-                f'<div style="border: 1px solid #ff4b4b; padding: 15px; border-radius: 8px; background-color: #0e1117; color: #f0f2f6; white-space: pre-wrap; font-size: 15px;">{colorized_stream}</div>',
+                f'<div style="border: 1px solid #ff4b4b; padding: 15px; border-radius: 8px; background-color: #0e1117; color: #f0f2f6; white-space: pre-wrap; font-size: 15px;">{display_stream}</div>',
                 unsafe_allow_html=True
             )
             
@@ -278,15 +283,22 @@ def render_tab_translate(params: dict):
     st.markdown("#### 지금까지 번역된 전체 텍스트")
     temp_chunks = list(st.session_state.translated_chunks)
     if is_batch_running and 0 <= LIVE_STATUS.current_chunk_idx < len(temp_chunks):
-        from core.translator import clean_markdown
-        temp_chunks[LIVE_STATUS.current_chunk_idx] = clean_markdown(LIVE_STATUS.current_streaming_text)
+        from core.translator import clean_markdown, extract_final_translation
+        temp_chunks[LIVE_STATUS.current_chunk_idx] = extract_final_translation(clean_markdown(LIVE_STATUS.current_streaming_text))
     
     full_text = "\n\n".join([c for c in temp_chunks if c])
     if full_text.strip():
-        st.markdown(
-            f'<div style="border: 1px solid #31333f; padding: 20px; border-radius: 8px; background-color: #0e1117; color: #f0f2f6; white-space: pre-wrap; font-size: 14px; height: 300px; overflow-y: auto;">{colorize_directives(full_text)}</div>',
-            unsafe_allow_html=True
-        )
+        if params.get("enable_coloring", True):
+            st.markdown(
+                f'<div style="border: 1px solid #31333f; padding: 20px; border-radius: 8px; background-color: #0e1117; color: #f0f2f6; white-space: pre-wrap; font-size: 14px; height: 300px; overflow-y: auto;">{colorize_directives(full_text)}</div>',
+                unsafe_allow_html=True
+            )
+        else:
+            import html
+            st.markdown(
+                f'<div style="border: 1px solid #31333f; padding: 20px; border-radius: 8px; background-color: #0e1117; color: #f0f2f6; white-space: pre-wrap; font-size: 14px; height: 300px; overflow-y: auto;">{html.escape(full_text)}</div>',
+                unsafe_allow_html=True
+            )
     else:
         st.caption("번역이 시작되면 이 영역에 누적 결과가 표시됩니다.")
 
@@ -461,6 +473,9 @@ def render_tab_translate(params: dict):
                                             if cancel_token and cancel_token.get("cancel"):
                                                 return None
                                             clean_txt = f"[번역 실패 - 원문 대체] {st.session_state.chunks[chunk_idx]}"
+                                        else:
+                                            from core.translator import extract_final_translation
+                                            clean_txt = extract_final_translation(clean_txt)
 
                                         LIVE_STATUS.single_completed_translations[chunk_idx] = clean_txt
                                         return clean_txt
