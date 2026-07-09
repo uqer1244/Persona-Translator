@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PersonaASMR-Chat: AI 롤플레잉 익스텐션</title>
+    <link rel="stylesheet" href="/static/css/chat_style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Controls -->
+        <aside class="sidebar">
+            <div class="logo-section">
+                <h1>PersonaASMR-Chat</h1>
+                <p>AI RP Extension Panel</p>
+            </div>
+
+            <!-- Project Selector -->
+            <div class="control-group">
+                <label class="control-label" for="project-select">대상 프로젝트</label>
+                <select id="project-select">
+                    <option value="">-- 프로젝트 선택 --</option>
+                </select>
+            </div>
+
+            <!-- Model Selector -->
+            <div class="control-group">
+                <label class="control-label" for="model-select">로컬 MLX VLM 모델</label>
+                <select id="model-select">
+                    <option value="">-- 모델 자동 탐색 --</option>
+                </select>
+            </div>
+
+            <!-- Load Button -->
+            <div class="control-group" style="margin-top: 8px;">
+                <button id="load-btn" class="btn-primary">프로젝트 & 모델 로드</button>
+            </div>
+
+            <!-- Unload Button -->
+            <div class="control-group">
+                <button id="unload-btn" class="btn-secondary">모델 VRAM 해제 (Unload)</button>
+            </div>
+
+            <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 8px 0;">
+
+            <!-- Persona Summary Info -->
+            <div class="glass-card" id="persona-card" style="display: none;">
+                <h3>캐릭터 페르소나</h3>
+                <div class="info-item">
+                    <div class="info-title">화자-청자 관계</div>
+                    <div id="persona-relation">-</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-title">말투 및 어조</div>
+                    <div id="persona-tone">-</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-title">상황 요약</div>
+                    <div id="persona-situation" style="font-size: 12px; color: var(--text-muted); max-height: 100px; overflow-y: auto;">-</div>
+                </div>
+            </div>
+
+            <!-- Glossary Mapping Info -->
+            <div class="glass-card" id="glossary-card" style="display: none;">
+                <h3>마스터 단어장 (적용됨)</h3>
+                <div id="glossary-list" style="font-size: 12px; display: flex; flex-direction: column; gap: 6px; max-height: 150px; overflow-y: auto; color: var(--text-muted);">
+                    <!-- Dynamic word mapping list -->
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Chat Panel -->
+        <main class="main-chat-area">
+            <!-- Header -->
+            <header class="chat-header">
+                <div class="header-project-info">
+                    <h2 id="current-project-title">대화할 캐릭터를 선택하세요</h2>
+                    <span id="current-model-info">VLM 엔진 준비 완료</span>
+                </div>
+                <div class="status-indicator">
+                    <span class="status-dot" id="status-dot"></span>
+                    <span id="status-text">연결 대기중</span>
+                </div>
+            </header>
+
+            <!-- Message Thread -->
+            <section class="chat-messages" id="chat-messages">
+                <div class="message assistant">
+                    <div class="message-bubble">
+                        안녕하세요! 왼쪽 컨트롤 패널에서 번역 완료된 **프로젝트**와 **모델**을 로드하여 대화 및 상황극을 시작해 보세요. [정중하게 고개 숙여 인사한다]
+                    </div>
+                    <div class="message-meta">System</div>
+                </div>
+            </section>
+
+            <!-- Input Form & Hidden Hint Panel -->
+            <section class="chat-input-panel">
+                <!-- RAG Query Match Panel -->
+                <div class="hint-panel" id="hint-panel">
+                    <div class="hint-header">
+                        💡 대본 맥락 인용 (RAG MATCH)
+                    </div>
+                    <div class="hint-content" id="hint-content">
+                        <!-- RAG contents will be filled here -->
+                    </div>
+                </div>
+
+                <!-- Input Row -->
+                <div class="input-row">
+                    <input type="text" id="chat-input" placeholder="대화를 입력하세요..." disabled>
+                    <button id="send-btn" class="btn-primary" disabled>전송</button>
+                    <button id="reset-btn" class="btn-secondary">대화 초기화</button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Web Application Logic -->
+    <script src="/static/js/chat_app.js"></script>
+</body>
+</html>
