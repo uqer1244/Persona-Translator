@@ -1,14 +1,14 @@
-# PersonaASMR-Translator 🎧💬
+# Persona-Translator
 
 > **Apple Silicon GPU 로컬 가속(MLX) 환경에 최적화된 상황극 및 ASMR 대본 전문 맞춤형 번역 & AI 롤플레잉(RP) 통합 시스템**
 
-`PersonaASMR-Translator`는 로컬 오프라인 VLM(Gemma 4 12B)을 활용하여 서브컬처 콘텐츠 특유의 섬세한 말투(페르소나)와 상황맥락을 반영하는 맞춤형 번역 도구입니다. 
+`Persona-Translator`는 로컬 오프라인 VLM(Gemma 4 12B)을 활용하여 서브컬처 콘텐츠 특유의 섬세한 말투(페르소나)와 상황맥락을 반영하는 맞춤형 번역 도구입니다. 
 
 이에 더해, 번역 완료된 페르소나와 단어장 및 대본 자산을 100% 재활용하는 **독자적인 AI 롤플레잉(RP) 채팅 익스텐션**을 제공하여 상황극 속 주인공과의 실시간 인터랙션 경험을 선사합니다.
 
 ---
 
-## 🚀 주요 기능
+## 주요 기능
 
 ### 1. Apple Silicon GPU 로컬 가속 (`mlx-vlm` / `mlx-lm`)
 - 외부 API 키나 네트워크 연결 없이 Mac 내부에서 100% 온디바이스(On-device) 작동하여 기밀 대본 유출 우려가 전혀 없습니다.
@@ -30,7 +30,7 @@
 - **Contextual RAG (BM25)**: 사용자 입력 메시지와 대본 번역문 간의 텍스트 유사도를 로컬에서 고속 검색하여, 캐릭터가 원작 대본 속 구절이나 에피소드를 영리하게 기억하고 인용하게 만드는 Hidden Prompt 장치를 갖추었습니다.
 ---
 
-## 🛠️ 기술 스택
+## 기술 스택
 
 * **Core Engine**: `mlx-vlm`, `mlx-lm`
 * **Frameworks**: `Streamlit` (번역 대시보드), `FastAPI` (비동기 채팅 API)
@@ -39,7 +39,7 @@
 
 ---
 
-## 💻 시작 가이드
+## 시작 가이드
 
 ### 1. 가상환경 및 의존성 패키지 설치 (Python 3.11 권장)
 터미널을 열고 프로젝트 폴더 루트에서 가상환경을 활성화한 뒤 패키지를 설치합니다.
@@ -66,13 +66,13 @@ ASMR_ADV/
 
 ### 3. 애플리케이션 실행
 
-#### 📝 [번역 대시보드 구동]
+#### [번역 대시보드 구동]
 ```bash
 streamlit run app.py
 ```
 - 구동이 완료되면 자동으로 웹 브라우저(`http://localhost:8501`)가 열리며 번역 및 VLM 분석을 가동할 수 있습니다.
 
-#### 💬 [AI 롤플레잉 익스텐션 구동]
+#### [AI 롤플레잉 익스텐션 구동]
 ```bash
 uvicorn app_chat:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -81,6 +81,6 @@ uvicorn app_chat:app --host 0.0.0.0 --port 8000 --reload
 
 ---
 
-## 📄 라이선스
+## 라이선스
 
 이 프로젝트는 **MIT License**에 따라 라이선스가 부여됩니다. 자세한 내용은 [LICENSE](LICENSE) 파일을 참고해 주세요.
