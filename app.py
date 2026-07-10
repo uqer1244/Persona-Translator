@@ -1,3 +1,4 @@
+import core.patches
 import streamlit as st
 from core.utils import LiveStatus
 from ui.sidebar import render_sidebar
@@ -5,6 +6,7 @@ from ui.tab_script import render_tab_script
 from ui.tab_persona import render_tab_persona
 from ui.tab_translate import render_tab_translate
 from ui.tab_refine import render_tab_refine
+from ui.tab_chat import render_tab_chat
 
 # Page configuration
 st.set_page_config(
@@ -238,11 +240,12 @@ st.markdown(f'<div class="workflow-summary">{summary_html}</div>', unsafe_allow_
 params = render_sidebar()
 
 # Render Tab Views
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "1. 대본 입력",
     "2. 페르소나 및 용어집 설정",
     "3. 번역 실행 및 실시간 보기",
-    "4. 교정 및 결과 다운로드"
+    "4. 교정 및 결과 다운로드",
+    "5. AI 롤플레잉 대화 (Chat)"
 ])
 
 with tab1:
@@ -253,3 +256,5 @@ with tab3:
     render_tab_translate(params)
 with tab4:
     render_tab_refine()
+with tab5:
+    render_tab_chat(params)
