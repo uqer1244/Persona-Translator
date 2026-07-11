@@ -39,8 +39,6 @@ def _refine_chunk(model, processor, translated_text: str, persona: dict, chunk_i
             prompt=formatted_prompt,
             temp=0.2,
             max_tokens=600,
-            kv_bits=3.5,
-            kv_quant_scheme="turboquant",
             repetition_penalty=1.1,
             repetition_context_size=100,
             seed=42,

@@ -4,12 +4,12 @@ import os
 import re
 
 
-BACKUP_ROOT = os.path.abspath("./DLdata")
+BACKUP_ROOT = os.path.abspath("./projects")
 
 def extract_rj_code(text: str) -> str | None:
     if not text:
         return None
-    match = re.search(r'\b(RJ|rj)\d{6,8}\b', text)
+    match = re.search(r'(?<![a-zA-Z])(RJ|rj)\d{6,8}', text)
     if match:
         return match.group(0).upper()
     return None
@@ -53,9 +53,90 @@ def safe_project_name(file_name: str) -> str:
 
 
 def get_backup_dir(file_name: str) -> str:
-    project_dir = os.path.join(BACKUP_ROOT, safe_project_name(file_name))
+    proj_name = safe_project_name(file_name)
+    project_dir = os.path.join(BACKUP_ROOT, proj_name)
     os.makedirs(project_dir, exist_ok=True)
+    
+    # 마이그레이션 로직: 기존에 DLdata/RJXXXXXX 내부에 저장되어 있던 메타데이터가 있으면 복사해 옵니다.
+    old_dir = os.path.join(os.path.abspath("./DLdata"), proj_name)
+    if os.path.exists(old_dir) and os.path.abspath(old_dir) != os.path.abspath(project_dir):
+        import shutil
+        # 주요 프로젝트 설정 복사
+        for f in ["progress.json", "persona.json", "chats.json", "thumbnail.jpg", "thumbnail.png", "thumbnail.webp", "scenario.txt"]:
+            old_file = os.path.join(old_dir, f)
+            new_file = os.path.join(project_dir, f)
+            if os.path.exists(old_file) and not os.path.exists(new_file):
+                try:
+                    if f == "scenario.txt":
+                        from core.utils import decode_text
+                        with open(old_file, "rb") as sf:
+                            raw_data = sf.read()
+                        decoded_text = decode_text(raw_data)
+                        with open(new_file, "w", encoding="utf-8") as df:
+                            df.write(decoded_text)
+                    else:
+                        shutil.copy(old_file, new_file)
+                except Exception:
+                    try:
+                        shutil.copy(old_file, new_file)
+                    except Exception:
+                        pass
+        # 이미지 폴더 통째로 복사
+        old_images = os.path.join(old_dir, "images")
+        new_images = os.path.join(project_dir, "images")
+        if os.path.exists(old_images) and not os.path.exists(new_images):
+            try:
+                shutil.copytree(old_images, new_images)
+            except Exception:
+                pass
     return project_dir
+
+
+def download_dlsite_thumbnail(rj_code: str, target_dir: str) -> str | None:
+    """
+    DLsite에서 주어진 RJ 코드에 해당하는 썸네일을 다운로드하여 target_dir에 저장합니다.
+    """
+    match = re.search(r'RJ(\d+)', rj_code, re.IGNORECASE)
+    if not match:
+        return None
+    
+    rj_num_str = match.group(1)
+    rj_num = int(rj_num_str)
+    
+    import math
+    import requests
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    urls = []
+    
+    # 1. 일반 동인지/오디오북 등 경로 (doujin 등)
+    folder_num = math.ceil(rj_num / 1000) * 1000
+    padding = len(rj_num_str)
+    folder_code = f"RJ{folder_num:0{padding}d}"
+    
+    subdirs = ["doujin", "books", "pro", "maniax", "girls", "bl", "trans", "serial"]
+    for subdir in subdirs:
+        urls.append(f"https://img.dlsite.jp/modpub/images2/work/{subdir}/{folder_code}/{rj_code}_img_main.jpg")
+        urls.append(f"https://img.dlsite.jp/modpub/images2/work/{subdir}/{folder_code}/{rj_code}_img_main.webp")
+        
+    # 2. 신형 8자리 시리얼 번호 매핑 경로
+    prefix = rj_code[:5]
+    urls.append(f"https://img.dlsite.jp/modpub/images2/work/serial/{prefix}/{rj_code}_img_main.jpg")
+    urls.append(f"https://img.dlsite.jp/modpub/images2/work/serial/{prefix}/{rj_code}_img_main.webp")
+    
+    for url in urls:
+        try:
+            res = requests.get(url, timeout=5, headers=headers)
+            if res.status_code == 200:
+                ext = ".webp" if url.endswith(".webp") else ".jpg"
+                target_path = os.path.join(target_dir, f"thumbnail{ext}")
+                with open(target_path, "wb") as f:
+                    f.write(res.content)
+                return target_path
+        except Exception:
+            pass
+            
+    return None
 
 
 def get_backup_path(file_name: str) -> str:
@@ -71,6 +152,18 @@ def save_progress(file_name: str, original_chunks: list[str], translated_chunks:
     }
     with open(backup_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+        
+    # 원본 대본 전체를 scenario.txt로 함께 자동 저장하여 원클릭 복원에 사용합니다.
+    try:
+        import streamlit as st
+        if "original_script" in st.session_state and st.session_state.original_script:
+            proj_dir = get_backup_dir(file_name)
+            scenario_path = os.path.join(proj_dir, "scenario.txt")
+            with open(scenario_path, "w", encoding="utf-8") as sf:
+                sf.write(st.session_state.original_script)
+    except Exception:
+        pass
+        
     return backup_path
 
 
@@ -161,11 +254,21 @@ def get_persona_backup_path(file_name: str) -> str:
     return os.path.join(get_backup_dir(file_name), "persona.json")
 
 
-def save_persona_backup(file_name: str, persona: dict, glossary: list):
+def save_persona_backup(file_name: str, persona: dict, glossary: list, script_summary: dict = None):
     path = get_persona_backup_path(file_name)
+    existing_data = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+        except Exception:
+            pass
+            
+    summary_data = script_summary if script_summary is not None else existing_data.get("script_summary", {})
     data = {
         "persona": persona,
-        "glossary_data": glossary
+        "glossary_data": glossary,
+        "script_summary": summary_data
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -221,11 +324,13 @@ def load_master_glossary() -> list[dict]:
                     src = item.get("원어 (Source)") or item.get("source") or ""
                     tgt = item.get("번역어 (Target)") or item.get("target") or ""
                     ctx = item.get("설명/뉘앙스 (Context)") or item.get("context") or item.get("설명") or ""
+                    is_proper = item.get("고유명사 (Proper Noun)", False)
                     if src.strip():
                         normalized.append({
                             "원어 (Source)": src.strip(),
                             "번역어 (Target)": tgt.strip(),
-                            "설명/뉘앙스 (Context)": ctx.strip()
+                            "설명/뉘앙스 (Context)": ctx.strip(),
+                            "고유명사 (Proper Noun)": bool(is_proper)
                         })
                 return normalized
     except Exception:
@@ -238,11 +343,13 @@ def save_master_glossary(glossary_list: list[dict]):
         src = str(item.get("원어 (Source)", "")).strip()
         tgt = str(item.get("번역어 (Target)", "")).strip()
         ctx = str(item.get("설명/뉘앙스 (Context)", "")).strip()
+        is_proper = item.get("고유명사 (Proper Noun)", False)
         if src:
             normalized.append({
                 "원어 (Source)": src,
                 "번역어 (Target)": tgt,
-                "설명/뉘앙스 (Context)": ctx
+                "설명/뉘앙스 (Context)": ctx,
+                "고유명사 (Proper Noun)": bool(is_proper)
             })
     sorted_list = sorted(normalized, key=lambda x: x["원어 (Source)"].lower())
     with open(MASTER_GLOSSARY_PATH, "w", encoding="utf-8") as f:
@@ -256,14 +363,18 @@ def merge_glossaries(master: list[dict], project: list[dict]) -> list[dict]:
         if not src or not tgt:
             continue
         desc = str(item.get("설명/뉘앙스 (Context)", "")).strip()
+        is_proper = item.get("고유명사 (Proper Noun)", False)
         if src in master_dict:
             master_dict[src]["번역어 (Target)"] = tgt
             if desc:
                 master_dict[src]["설명/뉘앙스 (Context)"] = desc
+            # 만약 프로젝트 단어장에서 명시적으로 고유명사로 체크했거나 기존에 체크되어 있었다면 True 유지
+            master_dict[src]["고유명사 (Proper Noun)"] = bool(is_proper or master_dict[src].get("고유명사 (Proper Noun)", False))
         else:
             master_dict[src] = {
                 "원어 (Source)": src,
                 "번역어 (Target)": tgt,
-                "설명/뉘앙스 (Context)": desc
+                "설명/뉘앙스 (Context)": desc,
+                "고유명사 (Proper Noun)": bool(is_proper)
             }
     return list(master_dict.values())

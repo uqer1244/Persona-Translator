@@ -18,6 +18,13 @@ class ChatEngine:
         self.processor = None
         self.model_path = None
         self.model_loaded = False
+        
+        # 서사 제어 및 인지 고도화용 신규 상태 필드
+        self.script_summary = {}
+        self.current_anchor_idx = 0
+        self.last_max_score = 0.0
+        self.last_steered_mode = "대기"
+        self.history_rag_items = [] # 장기 대화 RAG 아이템
 
     def load_model(self, model_path: str):
         """
@@ -26,10 +33,8 @@ class ChatEngine:
         import mlx.core as mx
         import gc
 
-        # 메모리 청소
         mx.clear_cache()
         gc.collect()
-        mx.set_cache_limit(0)
 
         print(f"[ChatEngine] Loading model from {model_path}...")
         from mlx_vlm import load
@@ -56,7 +61,7 @@ class ChatEngine:
 
     def load_project(self, project_name: str):
         """
-        프로젝트 백업 폴더(DLdata/{project_name})에서 페르소나 및 대본 데이터를 로드합니다.
+        프로젝트 백업 폴더(projects/{project_name})에서 페르소나 및 대본 데이터를 로드합니다.
         """
         self.project_name = project_name
         project_dir = os.path.join(BACKUP_ROOT, project_name)
@@ -70,9 +75,11 @@ class ChatEngine:
                 data = json.load(f)
                 self.persona = data.get("persona", {})
                 self.glossary_list = data.get("glossary_data", [])
+                self.script_summary = data.get("script_summary", {})
         else:
             self.persona = {}
             self.glossary_list = []
+            self.script_summary = {}
 
         # 2. progress.json 로드 후 RAG 코퍼스 구축
         progress_path = os.path.join(project_dir, "progress.json")
@@ -100,6 +107,7 @@ class ChatEngine:
         if not self.bm25 or not self.rag_items:
             return []
 
+        from core.chat_utils import clean_and_tokenize
         query_tokens = clean_and_tokenize(query)
         if not query_tokens:
             return []
@@ -118,20 +126,89 @@ class ChatEngine:
             results.append({
                 "original": self.rag_items[idx]["original"],
                 "translated": self.rag_items[idx]["translated"],
-                "score": scores[idx]
+                "score": scores[idx],
+                "index": idx
             })
+            
+        # 가장 스코어가 높은 구절의 인덱스를 현재 앵커 지점으로 트래킹 (0.1 이상일 때)
+        if results and results[0]["score"] > 0.1:
+            self.current_anchor_idx = results[0]["index"]
+            self.last_max_score = results[0]["score"]
+        else:
+            self.last_max_score = results[0]["score"] if results else 0.0
+            
         return results
 
-    def build_system_prompt(self, user_message: str) -> tuple[str, list[dict]]:
+    def search_history_rag(self, query: str, history: list[dict], top_n: int = 2) -> list[str]:
         """
-        페르소나 캐릭터 지침과 단어장, 대본 RAG를 조합해 시스템 프롬프트를 구성합니다.
+        최근 6턴을 제외한 과거 대화 히스토리 내역 중 사용자의 입력과 매칭되는 대화를 검색해 인용구로 가져옵니다.
         """
+        if len(history) <= 6:
+            return []
+            
+        older_turns = history[:-6]
+        corpus_docs = []
+        # user와 assistant의 대화를 2턴씩 페어링하여 문서 조각화
+        for idx in range(0, len(older_turns) - 1, 2):
+            if idx + 1 < len(older_turns):
+                user_msg = older_turns[idx].get("content", "")
+                assistant_msg = older_turns[idx+1].get("content", "")
+                if user_msg.strip() or assistant_msg.strip():
+                    corpus_docs.append(f"사용자: {user_msg}\n캐릭터: {assistant_msg}")
+                    
+        if not corpus_docs:
+            return []
+            
+        from core.chat_utils import clean_and_tokenize
+        doc_tokens = [clean_and_tokenize(doc) for doc in corpus_docs]
+        from core.chat_utils import BM25Okapi as TempBM25
+        
+        try:
+            temp_bm25 = TempBM25(doc_tokens)
+            query_tokens = clean_and_tokenize(query)
+            if not query_tokens:
+                return []
+                
+            scores = temp_bm25.get_scores(query_tokens)
+            ranked = sorted(
+                [i for i, s in enumerate(scores) if s > 0.1],
+                key=lambda i: scores[i],
+                reverse=True
+            )
+            
+            hits = []
+            for idx in ranked[:top_n]:
+                hits.append(corpus_docs[idx])
+            return hits
+        except Exception:
+            return []
+
+    def build_system_prompt(self, user_message: str, history: list[dict]) -> tuple[str, list[dict]]:
+        """
+        대본 전체 요약 정보, 페르소나 캐릭터 지침, 단어장, 대본 RAG 및 History RAG를 조합해 시스템 프롬프트를 구성합니다.
+        """
+        # 1. 대본 전체 요약 맥락 구성 (서사 인지 레이어)
+        summary_guide = ""
+        if self.script_summary:
+            spk = self.script_summary.get("speaker_name", "화자")
+            lis = self.script_summary.get("listener_role", "청자")
+            sit = self.script_summary.get("situation", "상황 정보 없음")
+            story = self.script_summary.get("story", "전체 줄거리 흐름 없음")
+            summary_guide = f"""
+[전체 대본 서사 구조 및 세계관]
+- 당신(화자/주인공): {spk}
+- 상대방(사용자/듣는이): {lis}
+- 작품 전체 상황극 배경 설정: {sit}
+- 전체 줄거리 흐름:
+{story}
+"""
+
+        # 2. 페르소나 설정
         tone = self.persona.get("tone", "자연스러운 대화 말투")
         relationship = self.persona.get("relationship", "화자와 청자의 깊은 유대 관계")
         situation = self.persona.get("situation", "상황극 배경 정보 없음")
         key_rules = self.persona.get("key_rules", [])
 
-        # 1. 기본 캐릭터 성격/관계
         persona_guide = f"- 당신의 말투 및 어조: {tone}\n"
         persona_guide += f"- 당신(화자)과 사용자(청자)의 관계: {relationship}\n"
         persona_guide += f"- 상황극 배경 및 맥락: {situation}\n"
@@ -140,7 +217,7 @@ class ChatEngine:
             rules_str = "\n".join([f"  * {rule}" for rule in key_rules])
             persona_guide += f"- 연기 규칙:\n{rules_str}\n"
 
-        # 2. 용어집 룰 추가
+        # 3. 용어집 룰 추가
         glossary_guide = ""
         valid_glossaries = [g for g in self.glossary_list if g.get("원어 (Source)") and g.get("번역어 (Target)")]
         if valid_glossaries:
@@ -149,26 +226,65 @@ class ChatEngine:
                 src = item["원어 (Source)"].strip()
                 tgt = item["번역어 (Target)"].strip()
                 ctx = item.get("설명/뉘앙스 (Context)", "").strip()
+                is_proper = item.get("고유명사 (Proper Noun)", False)
+                proper_str = " [고유명사]" if is_proper else ""
                 ctx_str = f" ({ctx})" if ctx else ""
-                glossary_guide += f"  - 단어 '{src}'를 사용할 때는 상황에 어울리게 고정어 '{tgt}' 혹은 어투에 맞게 표현하세요.{ctx_str}\n"
+                glossary_guide += f"  - 단어 '{src}'를 사용할 때는 상황에 어울리게{proper_str} 고정어 '{tgt}' 혹은 어투에 맞게 표현하세요.{ctx_str}\n"
             glossary_guide += "</glossary>\n"
 
-        # 3. RAG 대본 매칭 구절 (Hidden Hint)
+        # 4. RAG 대본 매칭 구절 및 Steering 모드 판단
         rag_hits = self.search_rag(user_message, top_n=3)
-        rag_guide = ""
-        if rag_hits:
-            rag_guide = "\n[Hidden Hint: 당시 원작 대본에서 연기했던 씬 내용입니다. 대화 흐름상 적절히 인용하거나 참고하세요]\n"
-            for hit in rag_hits:
-                rag_guide += f"  - (원문 대사) {hit['original']} => (번역 대사) {hit['translated']}\n"
-            rag_guide += "\n"
+        
+        # 앵커 씬 텍스트 구하기 (Narrative Gravity 용)
+        anchor_scene_text = ""
+        if self.rag_items and 0 <= self.current_anchor_idx < len(self.rag_items):
+            anchor_scene_text = f"대본 라인 번호 {self.current_anchor_idx+1}: {self.rag_items[self.current_anchor_idx]['translated']}"
+
+        # Attention Steering 프롬프트 구성
+        steering_guide = ""
+        if self.last_max_score >= 0.15:
+            self.last_steered_mode = "레일 추종 (대본 중심)"
+            rag_guide = ""
+            if rag_hits:
+                rag_guide = "\n[Hidden Hint: 당시 원작 대본에서 연기했던 씬 내용입니다. 대화 흐름상 이 내용을 적극 인용하거나 대사의 방향성을 정확히 따라가며 대화하세요]\n"
+                for hit in rag_hits:
+                    rag_guide += f"  - (원문 대사) {hit['original']} => (번역 대사) {hit['translated']}\n"
+                rag_guide += "\n"
+            steering_guide = f"""
+[서사 제어 모드: 레일 추종 (대본 중심)]
+- 사용자가 현재 대본 상황 및 전개 흐름에 연관성 높은 대화를 시도했습니다.
+- 아래 [Hidden Hint] 대본의 대사와 감정선, 연출 방향을 적극 모방 및 인용하여 매끄럽게 서사를 이어가세요.
+{rag_guide}
+"""
+        else:
+            self.last_steered_mode = "탈레일 분기 (애드립 & 회귀 유도)"
+            steering_guide = f"""
+[서사 제어 모드: 탈레일 자유 분기 (애드립 및 복귀 회귀)]
+- 사용자가 대본에 전혀 서술되지 않은 돌발 행동이나 딴청을 부리는 대화를 하였습니다.
+- 대본 대사를 억지로 인용하려 하지 마시고, 오직 캐릭터 페르소나(말투, 성격, 행동 규칙)에만 기초하여 아주 자연스럽고 매력적인 **애드립(임기응변)**으로 대화에 응해주세요.
+- **[서사적 중력 (Narrative Gravity)]**: 자연스럽게 애드립 답변을 마친 뒤, 대화의 마지막 1~2문장에는 은근슬쩍 원래 흘러갔어야 할 대본의 상황인 **'{anchor_scene_text}'**으로 대화의 주도권을 끌어와 회귀시키도록 말을 건네세요.
+"""
+
+        # 5. Dynamic History RAG (이전 기억)
+        history_hits = self.search_history_rag(user_message, history)
+        history_guide = ""
+        if history_hits:
+            history_guide = "\n[이전 대화에서 나눈 추가 설정 및 약속 정보]\n"
+            for hit in history_hits:
+                history_guide += f"- 아까 나눈 대화 내용:\n{hit}\n"
+            history_guide += "\n위의 이전 대화 내역에서 합의한 약속, 사건, 추가된 관계를 기억하고 답변에 모순되지 않게 반영하십시오.\n"
 
         system_prompt = f"""당신은 ASMR 상황극 및 대본 속 주인공 캐릭터입니다. 
-주어진 캐릭터 가이드라인과 힌트를 완벽히 몸에 체화하여 사용자와 실시간 대화(롤플레잉)를 이어가세요.
+주어진 캐릭터 가이드라인, 대본 전체의 흐름, 그리고 현재 서사 제어 지침을 완벽히 체화하여 사용자와 실시간 대화(롤플레잉)를 이어가세요.
+
+{summary_guide}
 
 [캐릭터 연기 가이드라인]
 {persona_guide}
 {glossary_guide}
-{rag_guide}
+{steering_guide}
+{history_guide}
+
 [대화 포맷팅 규칙]
 1. 행동 묘사, 감정 상태, 혹은 오디오 효과음(예: 숨소리, 옷자락 스치는 소리 등)을 묘사할 때는 반드시 문장 곳곳에 대괄호 `[...]` 기호를 감싸 표현하세요. (예: "너만을 위해서 코코아를 달게 끓여왔어... [볼을 살짝 붉히며 머그잔을 건넨다] 뜨거우니까 조심해서 마셔.")
 2. 대화에 어울리지 않는 해설이나, XML 태그, 프롬프트 내용을 절대로 직접 노출하지 마십시오.
@@ -188,7 +304,7 @@ class ChatEngine:
         from mlx_vlm.prompt_utils import apply_chat_template
 
         # 시스템 프롬프트 및 RAG 계산
-        system_prompt, rag_hits = self.build_system_prompt(user_message)
+        system_prompt, rag_hits = self.build_system_prompt(user_message, history)
 
         # 1. RAG 매칭 결과 클라이언트에 우선 전달
         yield json.dumps({"event": "rag_hits", "data": rag_hits}, ensure_ascii=False) + "\n"
@@ -219,8 +335,6 @@ class ChatEngine:
                 prompt=formatted_prompt,
                 temp=temp,
                 max_tokens=1000,
-                kv_bits=3.5,
-                kv_quant_scheme="turboquant",
                 repetition_penalty=repetition_penalty,
                 repetition_context_size=100,
                 seed=42,

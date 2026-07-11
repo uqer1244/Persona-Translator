@@ -9,3 +9,5 @@ transformers>=5.7.0,<5.13.0
 fastapi>=0.100.0
 uvicorn>=0.20.0
 jinja2>=3.0.0
+psutil>=7.2.2
+

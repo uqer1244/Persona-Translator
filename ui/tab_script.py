@@ -2,7 +2,30 @@ import streamlit as st
 import os
 import re
 from core.utils import get_backup_dir, list_saved_images, decode_text, natural_sort_key
-from core.progress_store import get_image_note_path, load_image_note
+from core.progress_store import get_image_note_path, load_image_note, BACKUP_ROOT
+
+def get_dir_tree(startpath: str) -> str:
+    tree = []
+    for root, dirs, files in os.walk(startpath):
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('translation_backup', 'temp_backups', 'images')]
+        level = root.replace(startpath, '').count(os.sep)
+        indent = '  ' * level
+        folder_name = os.path.basename(root)
+        if folder_name:
+            tree.append(f"{indent}📁 {folder_name}/")
+        subindent = '  ' * (level + 1)
+        for f in sorted(files):
+            if not f.startswith('.'):
+                ext = os.path.splitext(f)[1].lower()
+                icon = "📄"
+                if ext in {".txt", ".srt", ".pdf"}:
+                    icon = "📝"
+                elif ext in {".png", ".jpg", ".jpeg", ".webp"}:
+                    icon = "🖼️"
+                elif ext in {".mp3", ".wav", ".flac", ".m4a"}:
+                    icon = "🎵"
+                tree.append(f"{subindent}{icon} {f}")
+    return "\n".join(tree)
 
 def render_tab_script():
     st.header("대본 및 메타데이터 입력")
@@ -14,6 +37,111 @@ def render_tab_script():
     col_stat2.metric("청크 수", f"{len(st.session_state.chunks):,}")
     col_stat3.metric("소개 이미지", f"{image_count:,}")
     col_stat4.metric("적용 용어", f"{glossary_count:,}")
+
+    # 📦 기존 프로젝트 복원 Grid 렌더링
+    project_folders = []
+    if os.path.exists(BACKUP_ROOT):
+        for name in os.listdir(BACKUP_ROOT):
+            full_path = os.path.join(BACKUP_ROOT, name)
+            if os.path.isdir(full_path) and not name.startswith(".") and os.path.exists(os.path.join(full_path, "progress.json")):
+                project_folders.append(name)
+    project_folders.sort()
+
+    if project_folders:
+        with st.container(border=True):
+            st.subheader("📦 진행 중인 번역 프로젝트 복원")
+            st.caption("기존에 번역이 진행 중이거나 페르소나/채팅 설정이 저장된 프로젝트 목록입니다. 원클릭으로 세션이 완벽히 복원됩니다.")
+            
+            cols_per_row = 5
+            for i in range(0, len(project_folders), cols_per_row):
+                row_folders = project_folders[i:i+cols_per_row]
+                cols = st.columns(cols_per_row)
+                for idx, proj_name in enumerate(row_folders):
+                    col = cols[idx]
+                    proj_path = os.path.join(BACKUP_ROOT, proj_name)
+                    
+                    cover_path = None
+                    for ext in [".jpg", ".png", ".webp", ".jpeg"]:
+                        t_path = os.path.join(proj_path, f"thumbnail{ext}")
+                        if os.path.exists(t_path):
+                            cover_path = t_path
+                            break
+                    if not cover_path:
+                        images_dir = os.path.join(proj_path, "images")
+                        if os.path.exists(images_dir):
+                            try:
+                                for f in os.listdir(images_dir):
+                                    if not f.startswith(".") and os.path.splitext(f)[1].lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+                                        cover_path = os.path.join(images_dir, f)
+                                        break
+                            except Exception:
+                                pass
+                                
+                    with col:
+                        if cover_path:
+                            st.image(cover_path, width="stretch")
+                        else:
+                            st.markdown(
+                                '<div style="height: 120px; background-color: #1e293b; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #64748b; font-weight: bold; margin-bottom: 8px; font-size: 11px; border: 1px solid #334155;">'
+                                'NO THUMBNAIL'
+                                '</div>',
+                                unsafe_allow_html=True
+                            )
+                        st.markdown(
+                            f"<div style='text-align: center; font-weight: bold; font-size: 13px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;'>{proj_name}</div>",
+                            unsafe_allow_html=True
+                        )
+                        if st.button("📥 복원", key=f"restore_btn_{proj_name}", width="stretch", type="primary"):
+                            from core.progress_store import load_progress, load_persona_backup, list_saved_images
+                            progress_data = load_progress(proj_name)
+                            if progress_data:
+                                st.session_state.file_name = progress_data.get("file_name", f"{proj_name}_script.txt")
+                                st.session_state.chunks = progress_data.get("original_chunks", [])
+                                st.session_state.translated_chunks = progress_data.get("translated_chunks", [])
+                                
+                                is_srt = st.session_state.file_name.endswith(".srt")
+                                if is_srt:
+                                    st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])
+                                else:
+                                    st.session_state.translated_script = "\n".join([c for c in st.session_state.translated_chunks if c])
+                                    
+                                scenario_path = os.path.join(proj_path, "scenario.txt")
+                                if os.path.exists(scenario_path):
+                                    try:
+                                        with open(scenario_path, "rb") as sf:
+                                            raw_data = sf.read()
+                                        st.session_state.original_script = decode_text(raw_data)
+                                    except Exception:
+                                        sep = '\n\n' if is_srt else '\n\n\n'
+                                        st.session_state.original_script = sep.join(st.session_state.chunks)
+                                else:
+                                    sep = '\n\n' if is_srt else '\n\n\n'
+                                    st.session_state.original_script = sep.join(st.session_state.chunks)
+                                    
+                                persona_data = load_persona_backup(proj_name)
+                                if persona_data:
+                                    st.session_state.persona_data = persona_data.get("persona", {})
+                                    st.session_state.glossary_data = persona_data.get("glossary_data", [])
+                                    st.session_state.script_summary = persona_data.get("script_summary", {})
+                                
+                                try:
+                                    from ui.tab_chat import load_chat_history
+                                    chat_hist = load_chat_history(proj_name)
+                                    if chat_hist:
+                                        st.session_state.chat_history = chat_hist
+                                        st.session_state.chat_loaded_project = proj_name
+                                    else:
+                                        st.session_state.chat_history = []
+                                        st.session_state.chat_loaded_project = proj_name
+                                except Exception:
+                                    st.session_state.chat_history = []
+                                    st.session_state.chat_loaded_project = proj_name
+                                    
+                                st.session_state.temp_image_paths = list_saved_images(proj_name)
+                                st.session_state.rj_code = proj_name
+                                
+                                st.toast(f"✅ [{proj_name}] 프로젝트 복원 완료!")
+                                st.rerun()
 
     with st.container(border=True):
         st.subheader("작품 기본 정보")
@@ -243,6 +371,32 @@ def render_tab_script():
                             format_func=lambda x: os.path.relpath(x, local_path)
                         )
 
+                    # 대표 썸네일 지정 옵션
+                    thumbnail_option = st.selectbox(
+                        "대표 썸네일 이미지 지정",
+                        options=["DLsite에서 자동 다운로드"] + [os.path.basename(img) for img in selected_local_images],
+                        help="프로젝트 복원 목록 및 홈 화면에 표시할 카드 썸네일 이미지를 지정합니다."
+                    )
+
+                    # Folder tree visualization
+                    with st.expander("📂 선택한 폴더의 디렉토리 구조", expanded=False):
+                        tree_md = get_dir_tree(local_path)
+                        st.text(tree_md)
+
+                    # Image Preview Expander
+                    with st.expander("🖼️ 스캔된 이미지 미리보기", expanded=False):
+                        if images_found:
+                            preview_image_path = st.selectbox(
+                                "미리볼 이미지 선택",
+                                options=images_found,
+                                format_func=lambda x: os.path.relpath(x, local_path),
+                                key="local_image_preview_sel"
+                            )
+                            if preview_image_path:
+                                st.image(preview_image_path, width=300)
+                        else:
+                            st.info("미리 볼 이미지 파일이 없습니다.")
+
                     # Script Preview Expander
                     with st.expander("스캔된 대본 파일 미리보기", expanded=False):
                         if scripts_found:
@@ -309,25 +463,25 @@ def render_tab_script():
                             first_name, _ = os.path.splitext(os.path.basename(sorted_local_scripts[0]))
                             st.session_state.file_name = f'{first_name}_외_{len(sorted_local_scripts)-1}개' + ('.srt' if is_srt_mode else '.txt')
 
+                        # Auto set project dir based on filename or RJ code
+                        from core.progress_store import extract_rj_code
+                        rj = extract_rj_code(local_path)
+                        if not rj:
+                            for sf in sorted_local_scripts:
+                                rj = extract_rj_code(os.path.basename(sf))
+                                if rj: break
+                        if not rj:
+                            rj = extract_rj_code(st.session_state.original_script)
+                        if rj:
+                            st.session_state.rj_code = rj
+
+                        project_dir = get_backup_dir(st.session_state.file_name)
+                        images_dir = os.path.join(project_dir, "images")
+                        os.makedirs(images_dir, exist_ok=True)
+
                         # Process images
+                        temp_image_paths = []
                         if selected_local_images:
-                            # Auto set project dir based on filename or RJ code
-                            from core.progress_store import extract_rj_code
-                            rj = extract_rj_code(local_path)
-                            if not rj:
-                                for sf in sorted_local_scripts:
-                                    rj = extract_rj_code(os.path.basename(sf))
-                                    if rj: break
-                            if not rj:
-                                rj = extract_rj_code(st.session_state.original_script)
-                            if rj:
-                                st.session_state.rj_code = rj
-
-                            project_dir = get_backup_dir(st.session_state.file_name)
-                            images_dir = os.path.join(project_dir, "images")
-                            os.makedirs(images_dir, exist_ok=True)
-
-                            temp_image_paths = []
                             sorted_local_images = sorted(selected_local_images, key=lambda x: natural_sort_key(os.path.basename(x)))
                             for i_idx, img_path in enumerate(sorted_local_images):
                                 with open(img_path, "rb") as f:
@@ -347,7 +501,45 @@ def render_tab_script():
                                     with open(target_img_path, "wb") as f:
                                         f.write(raw_image)
                                 temp_image_paths.append(target_img_path)
-                            st.session_state.temp_image_paths = temp_image_paths
+                        st.session_state.temp_image_paths = temp_image_paths
+
+                        # Handle representative thumbnail selection or DLsite download
+                        if thumbnail_option == "DLsite에서 자동 다운로드":
+                            if st.session_state.rj_code:
+                                from core.progress_store import download_dlsite_thumbnail
+                                download_dlsite_thumbnail(st.session_state.rj_code, project_dir)
+                        else:
+                            # User selected a specific local image
+                            selected_thumb_src = None
+                            for img in selected_local_images:
+                                if os.path.basename(img) == thumbnail_option:
+                                    selected_thumb_src = img
+                                    break
+                            if selected_thumb_src:
+                                try:
+                                    import shutil
+                                    ext = os.path.splitext(selected_thumb_src)[1].lower()
+                                    target_thumb_path = os.path.join(project_dir, f"thumbnail{ext}")
+                                    shutil.copy(selected_thumb_src, target_thumb_path)
+                                except Exception as e:
+                                    print(f"[Thumbnail Copy Error] {e}")
+                            elif st.session_state.rj_code:
+                                # Fallback to DLsite download
+                                from core.progress_store import download_dlsite_thumbnail
+                                download_dlsite_thumbnail(st.session_state.rj_code, project_dir)
+
+                        # Save progress and persona immediately so it registers as a project
+                        from core.progress_store import save_progress, save_persona_backup
+                        if is_srt_mode:
+                            from core.document import chunk_srt
+                            st.session_state.chunks = chunk_srt(st.session_state.original_script)
+                        else:
+                            from core.document import chunk_text
+                            st.session_state.chunks = chunk_text(st.session_state.original_script)
+                        
+                        st.session_state.translated_chunks = [""] * len(st.session_state.chunks)
+                        save_progress(st.session_state.file_name, st.session_state.chunks, st.session_state.translated_chunks)
+                        save_persona_backup(st.session_state.file_name, {}, [])
 
                         # Scan for master glossary matches
                         from core.progress_store import load_master_glossary
@@ -488,6 +680,25 @@ def render_tab_script():
             else:
                 first_name, _ = os.path.splitext(sorted_files[0].name)
                 st.session_state.file_name = f'{first_name}_외_{len(sorted_files)-1}개' + ('.srt' if is_srt_mode else '.txt')
+
+            # Save progress and persona immediately so it registers as a project, and download thumbnail
+            from core.progress_store import save_progress, save_persona_backup, get_backup_dir
+            if is_srt_mode:
+                from core.document import chunk_srt
+                st.session_state.chunks = chunk_srt(st.session_state.original_script)
+            else:
+                from core.document import chunk_text
+                st.session_state.chunks = chunk_text(st.session_state.original_script)
+            
+            st.session_state.translated_chunks = [""] * len(st.session_state.chunks)
+            save_progress(st.session_state.file_name, st.session_state.chunks, st.session_state.translated_chunks)
+            save_persona_backup(st.session_state.file_name, {}, [])
+            
+            # Download thumbnail
+            if st.session_state.rj_code:
+                project_dir = get_backup_dir(st.session_state.file_name)
+                from core.progress_store import download_dlsite_thumbnail
+                download_dlsite_thumbnail(st.session_state.rj_code, project_dir)
 
             # 마스터 단어장에서 용어 자동 매칭 (Scan & 선탑재)
             from core.progress_store import load_master_glossary

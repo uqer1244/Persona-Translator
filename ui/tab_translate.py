@@ -1,4 +1,5 @@
 import streamlit as st
+import time
 from core.utils import EXECUTOR, LiveStatus, colorize_directives, save_progress_backup
 from core.progress_store import save_progress
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
@@ -111,13 +112,12 @@ def render_tab_translate(params: dict):
         st.subheader(f"전체 번역 진행 중 (청크 {curr_idx + 1} / {total_chunks})")
         
         # 시간 경과 및 ETA 계산
-        import time
         elapsed_sec = 0.0
         eta_str = "계산 중..."
         speed_str = "계산 중..."
         
-        if "translate_start_time" in st.session_state:
-            elapsed_sec = time.time() - st.session_state.translate_start_time
+        if hasattr(LIVE_STATUS, "translate_start_time"):
+            elapsed_sec = time.time() - LIVE_STATUS.translate_start_time
             if curr_idx > 0:
                 sec_per_chunk = elapsed_sec / curr_idx
                 speed_str = f"{sec_per_chunk:.1f}초/청크"
@@ -225,16 +225,34 @@ def render_tab_translate(params: dict):
                 LIVE_STATUS.current_chunk_idx = -1
                 LIVE_STATUS.current_streaming_text = ""
                 LIVE_STATUS.completed_translations = {}
-                import time
-                st.session_state.translate_start_time = time.time()
+                LIVE_STATUS.translate_start_time = time.time()
+                LIVE_STATUS.translate_token_count = 0
+                LIVE_STATUS.token_speed = 0.0
                 
                 file_name_captured = st.session_state.file_name
                 original_chunks_captured = list(st.session_state.chunks)
                 translated_chunks_snapshot = list(st.session_state.translated_chunks)
                 
                 def update_progress(token_text, chunk_idx, total_chunks, current_chunk_translation, is_finished):
+                    if not hasattr(LIVE_STATUS, 'last_chunk_idx'):
+                        LIVE_STATUS.last_chunk_idx = -1
+                    if LIVE_STATUS.last_chunk_idx != chunk_idx:
+                        LIVE_STATUS.last_chunk_idx = chunk_idx
+                        LIVE_STATUS.chunk_start_time = None
+                        LIVE_STATUS.chunk_token_count = 0
+                        
                     LIVE_STATUS.current_chunk_idx = chunk_idx
                     LIVE_STATUS.current_streaming_text = current_chunk_translation
+                    
+                    if token_text:
+                        if LIVE_STATUS.chunk_token_count == 0:
+                            LIVE_STATUS.chunk_start_time = time.time()
+                        LIVE_STATUS.chunk_token_count += 1
+                        if LIVE_STATUS.chunk_start_time is not None:
+                            elapsed = time.time() - LIVE_STATUS.chunk_start_time
+                            if elapsed > 0:
+                                LIVE_STATUS.token_speed = (LIVE_STATUS.chunk_token_count - 1) / elapsed
+                            
                     if is_finished:
                         from core.translator import clean_markdown
                         clean_txt = clean_markdown(current_chunk_translation)
@@ -251,7 +269,6 @@ def render_tab_translate(params: dict):
                             pass
 
                     # Real-time Streamlit UI rerun trigger
-                    import time
                     now = time.time()
                     if not hasattr(LIVE_STATUS, '_last_rerun_time'):
                         LIVE_STATUS._last_rerun_time = 0
@@ -428,7 +445,6 @@ def render_tab_translate(params: dict):
 
                                             def on_token(_token_text, current_text):
                                                 LIVE_STATUS.single_streaming_text[chunk_idx] = current_text
-                                                import time
                                                 now = time.time()
                                                 if not hasattr(LIVE_STATUS, '_last_rerun_time'):
                                                     LIVE_STATUS._last_rerun_time = 0

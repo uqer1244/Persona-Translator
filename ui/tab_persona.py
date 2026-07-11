@@ -94,6 +94,33 @@ def render_tab_persona():
                             st.error(f"분석 중 오류 발생: {e}")
                             st.code(traceback.format_exc(), language="python")
 
+            # Persona clear button
+            if st.button("페르소나 및 이미지 분석 결과 초기화", width="stretch", type="secondary"):
+                st.session_state.persona = {
+                    "tone": "",
+                    "relationship": "",
+                    "situation": "",
+                    "key_rules": []
+                }
+                deleted_count = 0
+                if st.session_state.temp_image_paths:
+                    for img_path in st.session_state.temp_image_paths:
+                        note_path = get_image_note_path(img_path)
+                        if os.path.exists(note_path):
+                            try:
+                                os.remove(note_path)
+                                deleted_count += 1
+                            except Exception:
+                                pass
+                if st.session_state.file_name:
+                    save_persona_backup(
+                        st.session_state.file_name,
+                        st.session_state.persona,
+                        st.session_state.glossary_data
+                    )
+                st.success("페르소나 및 소개 이미지 분석 결과가 초기화되었습니다.")
+                st.rerun()
+
             # Editable inputs
             st.session_state.persona["tone"] = st.text_input(
                 "어조 및 말투",
@@ -119,7 +146,37 @@ def render_tab_persona():
 
     with col2:
         with st.container(border=True):
-            st.subheader("용어집 (Word Mapping)")
+            # AI 고유명사 분류 버튼 추가
+            col_ai1, col_ai2 = st.columns([1.8, 1.2])
+            with col_ai1:
+                st.subheader("용어집 (Word Mapping)")
+            with col_ai2:
+                if st.button("🪄 AI 고유명사 자동 분류", use_container_width=True, help="LLM을 활용해 용어집의 단어 중 고유명사(인물/지명/고유개념)를 찾아 체크합니다."):
+                    if not st.session_state.model_loaded:
+                        st.error("먼저 사이드바에서 모델을 로드해주세요!")
+                    elif not st.session_state.glossary_data:
+                        st.warning("분류할 단어가 없습니다.")
+                    else:
+                        from core.analyzer import classify_proper_nouns
+                        with st.spinner("AI가 고유명사를 판단하는 중..."):
+                            try:
+                                proper_nouns = classify_proper_nouns(
+                                    st.session_state.model,
+                                    st.session_state.processor,
+                                    st.session_state.glossary_data
+                                )
+                                # 매칭되는 단어에 대해 체크박스 True 처리
+                                count = 0
+                                for item in st.session_state.glossary_data:
+                                    src = item.get("원어 (Source)", "")
+                                    if src and any(pn.lower() == src.lower() for pn in proper_nouns):
+                                        item["고유명사 (Proper Noun)"] = True
+                                        count += 1
+                                st.success(f"고유명사 {count}개 자동 식별 완료!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"고유명사 분석 실패: {e}")
+
             st.caption("특정 고유 명사나 ASMR용 단어가 지정한 한글 단어로 고정 번역되도록 정의합니다.")
 
             # Normalize current glossary_data to have the columns we want
@@ -128,16 +185,18 @@ def render_tab_persona():
                 src = item.get("원어 (Source)") or item.get("원어 (영문/일문 등)") or ""
                 tgt = item.get("번역어 (Target)") or item.get("고정 번역어 (한글)") or ""
                 ctx = item.get("설명/뉘앙스 (Context)") or ""
+                is_proper = item.get("고유명사 (Proper Noun)", False)
                 normalized_glossary.append({
                     "원어 (Source)": src,
                     "번역어 (Target)": tgt,
-                    "설명/뉘앙스 (Context)": ctx
+                    "설명/뉘앙스 (Context)": ctx,
+                    "고유명사 (Proper Noun)": bool(is_proper)
                 })
             st.session_state.glossary_data = normalized_glossary
 
             glossary_df = pd.DataFrame(st.session_state.glossary_data)
             if glossary_df.empty:
-                glossary_df = pd.DataFrame(columns=["원어 (Source)", "번역어 (Target)", "설명/뉘앙스 (Context)"])
+                glossary_df = pd.DataFrame(columns=["원어 (Source)", "번역어 (Target)", "설명/뉘앙스 (Context)", "고유명사 (Proper Noun)"])
 
             # Streamlit interactive data editor
             edited_df = st.data_editor(
@@ -147,30 +206,56 @@ def render_tab_persona():
                 column_config={
                     "원어 (Source)": st.column_config.TextColumn("원어 (영문/일문 등)", help="원본 텍스트 내 매칭 단어", required=True),
                     "번역어 (Target)": st.column_config.TextColumn("고정 번역어 (한글)", help="출력될 한글 단어", required=True),
-                    "설명/뉘앙스 (Context)": st.column_config.TextColumn("설명 및 뉘앙스", help="어떤 뉘앙스로 변환되어야 하는지 정보 기입 (선택사항)")
+                    "설명/뉘앙스 (Context)": st.column_config.TextColumn("설명 및 뉘앙스", help="뉘앙스 정보 기입 (선택사항)"),
+                    "고유명사 (Proper Noun)": st.column_config.CheckboxColumn("고유명사 여부", help="인물/지명/고유 개념인 경우 체크", default=False)
                 }
             )
             st.session_state.glossary_data = edited_df.to_dict(orient="records")
 
-            # Merge to Master Glossary button
+            # Glossary actions (Merge / Reset)
             st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-            if st.button("현재 용어들을 마스터 단어장에 누적 병합 및 저장", width="stretch"):
-                master = load_master_glossary()
-                merged = merge_glossaries(master, st.session_state.glossary_data)
-                save_master_glossary(merged)
-                st.success(f"현재 프로젝트의 용어 목록이 마스터 단어장(master_glossary.json)에 성공적으로 누적 저장되었습니다! (총 {len(merged)}개 용어)")
-            else:
-                valid_terms = sum(1 for item in st.session_state.glossary_data if item.get("원어 (Source)") and item.get("번역어 (Target)"))
-                st.caption(f"현재 프로젝트 용어 {valid_terms}개가 준비되어 있습니다.")
+            col_gl1, col_gl2 = st.columns(2)
+            with col_gl1:
+                if st.button("마스터 단어장에 누적 병합 및 저장", width="stretch"):
+                    master = load_master_glossary()
+                    merged = merge_glossaries(master, st.session_state.glossary_data)
+                    save_master_glossary(merged)
+                    st.success(f"마스터 단어장 병합 완료! (총 {len(merged)}개)")
+            with col_gl2:
+                if st.button("현재 프로젝트 용어집 초기화", width="stretch", type="secondary"):
+                    st.session_state.glossary_data = []
+                    if st.session_state.file_name:
+                        save_persona_backup(
+                            st.session_state.file_name,
+                            st.session_state.persona,
+                            st.session_state.glossary_data
+                        )
+                    st.success("현재 프로젝트의 용어집이 초기화되었습니다.")
+                    st.rerun()
+
+            valid_terms = sum(1 for item in st.session_state.glossary_data if item.get("원어 (Source)") and item.get("번역어 (Target)"))
+            st.caption(f"현재 프로젝트 용어 {valid_terms}개가 준비되어 있습니다.")
 
     # 📚 마스터 단어장 전역 관리 섹션 (Data Editor)
     st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
     with st.expander("마스터 단어장 데이터베이스 관리 (전역 적용)", expanded=False):
         st.caption("여러 프로젝트에서 공통으로 적용되는 전역 단어장(master_glossary.json)의 단어 목록입니다. 직접 추가, 삭제, 수정이 가능합니다.")
         master_list = load_master_glossary()
-        master_df = pd.DataFrame(master_list)
+        normalized_master = []
+        for item in master_list:
+            src = item.get("원어 (Source)") or ""
+            tgt = item.get("번역어 (Target)") or ""
+            ctx = item.get("설명/뉘앙스 (Context)") or ""
+            is_proper = item.get("고유명사 (Proper Noun)", False)
+            normalized_master.append({
+                "원어 (Source)": src,
+                "번역어 (Target)": tgt,
+                "설명/뉘앙스 (Context)": ctx,
+                "고유명사 (Proper Noun)": bool(is_proper)
+            })
+        master_df = pd.DataFrame(normalized_master)
         if master_df.empty:
-            master_df = pd.DataFrame(columns=["원어 (Source)", "번역어 (Target)", "설명/뉘앙스 (Context)"])
+            master_df = pd.DataFrame(columns=["원어 (Source)", "번역어 (Target)", "설명/뉘앙스 (Context)", "고유명사 (Proper Noun)"])
 
         edited_master_df = st.data_editor(
             master_df,
@@ -180,7 +265,8 @@ def render_tab_persona():
             column_config={
                 "원어 (Source)": st.column_config.TextColumn("원어", required=True),
                 "번역어 (Target)": st.column_config.TextColumn("고정 번역어 (한글)", required=True),
-                "설명/뉘앙스 (Context)": st.column_config.TextColumn("설명 및 뉘앙스")
+                "설명/뉘앙스 (Context)": st.column_config.TextColumn("설명 및 뉘앙스"),
+                "고유명사 (Proper Noun)": st.column_config.CheckboxColumn("고유명사", default=False)
             }
         )
 

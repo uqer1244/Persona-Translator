@@ -78,15 +78,26 @@ def build_translation_prompt(
         else:
             format_instruction += "- 괄호 내부의 지시문 내용은 번역하지 말고 영문 또는 원문 단어 그대로 유지하세요 (예: [whispering] -> [whispering]).\n"
 
-    # 4. 슬라이딩 윈도우 컨텍스트 구성
+    # 4. 슬라이딩 윈도우 컨텍스트 구성 (마지막 3줄만 슬라이딩하여 컨텍스트 토큰 최적화)
     context_str = ""
     if prev_original and prev_translated:
+        prev_orig_lines = prev_original.splitlines()
+        prev_trans_lines = prev_translated.splitlines()
+        
+        prev_orig_trimmed = "\n".join(prev_orig_lines[-3:])
+        prev_trans_trimmed = "\n".join(prev_trans_lines[-3:])
+        
+        if len(prev_orig_lines) > 3:
+            prev_orig_trimmed = "...\n" + prev_orig_trimmed
+        if len(prev_trans_lines) > 3:
+            prev_trans_trimmed = "...\n" + prev_trans_trimmed
+            
         context_str = f"""
-[이전 번역 맥락 (참고용)]
+[이전 번역 맥락 (참고용 - 직전 대사 3줄)]
 ---이전 원문---
-{prev_original}
+{prev_orig_trimmed}
 ---이전 번역문---
-{prev_translated}
+{prev_trans_trimmed}
 ----------------
 """
 
@@ -99,25 +110,20 @@ def build_translation_prompt(
 {glossary_str}
 {format_instruction}
 
-[번역 사고 가이드라인 (중요 - 반드시 아래 출력 포맷을 엄격히 지켜 출력하십시오)]
-반드시 다음 두 섹션으로 나누어 출력해야 하며, 다른 인삿말이나 설명글은 일절 배제하십시오.
-
-[대본 분석]
-- 번역할 대본의 각 행(Line)이 대사, 연출 지시문/상황어(괄호 안의 텍스트), 효과음(별표 사이), 혹은 무대 설명문 등인지 분석하고 분류하여 한국어로 짤막하게 매칭 관계를 서술하십시오. (예: "1행: [효과음] 바람 소리", "2행: [히로인A 대사] 대사 내용")
-- 화자가 여러 명인 경우, 이 행에서 말하는 인물이 누구인지 명확히 구분하여 분류하십시오.
+[출력 형식 가이드라인 (중요 - 반드시 아래 출력 형식을 엄격히 준수하십시오)]
+다른 해설, 인삿말, 혹은 대본 분석글은 일절 배제하고, 오직 [최종 번역 결과] 마커 아래에 대본 번역 본문만 출력하십시오.
 
 [최종 번역 결과]
-- 위 분석을 바탕으로 번역된 최종 한국어 대본 본문을 출력하십시오.
-- 원문의 줄바꿈 구조 및 특수 문자, 괄호 기호 형태(대괄호 [ ] 및 ［ ］, 소괄호 ( ) 및 （ ）, 별표 * * 및 ＊ ＊), 화자 콜론 기호(: 또는 ：) 등 모든 대본 포맷을 그대로 유지해야 합니다.
-- 절대 대본 형식을 일반 소설 서술형 문장(예: ~라고 말했다)으로 풀어서 합치지 마십시오.
+- 원본 대본의 행 단위 구조(라인 바이 라인) 및 줄바꿈 구조, 특수 문자, 화자 콜론 기호(: 또는 ：), 괄호 지시문 기호 형태를 그대로 완벽하게 유지하여 한국어로 번역하십시오.
+- 절대 대본을 소설 서술형 문장(예: ~라고 속삭였다)으로 풀거나 합치지 말고, 대본 형식 그대로 번역하십시오.
 
 {context_str}
 [번역할 대본]
 {current_chunk}
 
 [주의사항]
-- 대본 번역 이외의 질문에 대한 답변, 해설, 프롬프트 지시사항의 반복 등은 절대로 출력하지 마십시오.
-- 오직 번역 완료된 대본 내용만 출력하세요.
+- 대본 번역 본문 이외의 어떠한 설명, 질문에 대한 답변, 프롬프트의 반복 출력도 허용되지 않습니다.
+- 오직 번역이 완료된 대본 내용만 출력하세요.
 """
     return prompt
 
@@ -172,14 +178,26 @@ def build_retranslation_prompt(
             format_instruction += "- 괄호 내부의 지시문 내용은 번역하지 말고 영문 또는 원문 단어 그대로 유지하세요 (예: [whispering] -> [whispering]).\n"
 
     # 4. 슬라이딩 윈도우 컨텍스트 구성
+    # 4. 슬라이딩 윈도우 컨텍스트 구성 (마지막 3줄만 슬라이딩하여 컨텍스트 토큰 최적화)
     context_str = ""
     if prev_original and prev_translated:
+        prev_orig_lines = prev_original.splitlines()
+        prev_trans_lines = prev_translated.splitlines()
+        
+        prev_orig_trimmed = "\n".join(prev_orig_lines[-3:])
+        prev_trans_trimmed = "\n".join(prev_trans_lines[-3:])
+        
+        if len(prev_orig_lines) > 3:
+            prev_orig_trimmed = "...\n" + prev_orig_trimmed
+        if len(prev_trans_lines) > 3:
+            prev_trans_trimmed = "...\n" + prev_trans_trimmed
+            
         context_str = f"""
-[이전 번역 맥락 (참고용)]
+[이전 번역 맥락 (참고용 - 직전 대사 3줄)]
 ---이전 원문---
-{prev_original}
+{prev_orig_trimmed}
 ---이전 번역문---
-{prev_translated}
+{prev_trans_trimmed}
 ----------------
 """
 
@@ -192,17 +210,12 @@ def build_retranslation_prompt(
 {glossary_str}
 {format_instruction}
 
-[번역 사고 가이드라인 (중요 - 반드시 아래 출력 포맷을 엄격히 지켜 출력하십시오)]
-반드시 다음 두 섹션으로 나누어 출력해야 하며, 다른 인삿말이나 설명글은 일절 배제하십시오.
-
-[대본 분석]
-- 번역할 대본의 각 행(Line)이 대사, 연출 지시문/상황어(괄호 안의 텍스트), 효과음(별표 사이), 혹은 무대 설명문 등인지 분석하고 분류하여 한국어로 짤막하게 매칭 관계를 서술하십시오. (예: "1행: [효과음] 바람 소리", "2행: [히로인A 대사] 대사 내용")
-- 화자가 여러 명인 경우, 이 행에서 말하는 인물이 누구인지 명확히 구분하여 분류하십시오.
+[출력 형식 가이드라인 (중요 - 반드시 아래 출력 형식을 엄격히 준수하십시오)]
+다른 해설, 인삿말, 혹은 대본 분석글은 일절 배제하고, 오직 [최종 번역 결과] 마커 아래에 수정 완료된 대본 번역 본문만 출력하십시오.
 
 [최종 번역 결과]
-- 위 분석을 바탕으로 번역된 최종 한국어 대본 본문을 출력하십시오.
-- 원문의 줄바꿈 구조 및 특수 문자, 괄호 기호 형태(대괄호 [ ] 및 ［ ］, 소괄호 ( ) 및 （ ）, 별표 * * 및 ＊ ＊), 화자 콜론 기호(: 또는 ：) 등 모든 대본 포맷을 그대로 유지해야 합니다.
-- 절대 대본 형식을 일반 소설 서술형 문장(예: ~라고 말했다)으로 풀어서 합치지 마십시오.
+- 원본 대본의 행 단위 구조(라인 바이 라인) 및 줄바꿈 구조, 특수 문자, 화자 콜론 기호(: 또는 ：), 괄호 지시문 기호 형태를 그대로 완벽하게 유지하여 한국어로 번역 및 교정하십시오.
+- 절대 대본을 소설 서술형 문장(예: ~라고 속삭였다)으로 풀거나 합치지 말고, 대본 형식 그대로 번역하십시오.
 
 {context_str}
 
@@ -215,7 +228,7 @@ def build_retranslation_prompt(
 [주의사항]
 - 기존 번역 초안에서 잘못 지정된 호칭이나 페르소나에 맞지 않는 말투를 발견하면, [캐릭터 페르소나] 및 [용어집 번역 규칙]에 따라 철저히 수정해 주세요.
 - 기존 번역의 장점을 살리되, 어조 규칙 및 지정어 규칙이 위배된 부분을 정교하게 보정하세요.
-- 대본 번역 이외의 질문에 대한 답변, 해설, 프롬프트 지시사항의 반복 등은 절대로 출력하지 마십시오.
+- 대본 번역 본문 이외의 어떠한 설명, 질문에 대한 답변, 프롬프트의 반복 출력도 허용되지 않습니다.
 - 오직 번역이 완료된 대본 내용만 출력하세요.
 """
     return prompt
@@ -251,8 +264,6 @@ def stream_prompt(
         prompt=formatted_prompt,
         temp=temp,
         max_tokens=max_tokens,
-        kv_bits=3.5,
-        kv_quant_scheme="turboquant",
         repetition_penalty=repetition_penalty,
         repetition_context_size=100,
         seed=42,
@@ -317,7 +328,7 @@ def translate_script(
     glossary: dict,
     is_srt: bool,
     translate_directives: bool,
-    chunk_size: int = 800,
+    chunk_size: int = 400,
     temp: float = 0.3,
     repetition_penalty: float = 1.1,
     existing_translations: list[str] = None,

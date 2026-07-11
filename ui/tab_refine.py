@@ -63,55 +63,6 @@ def render_tab_refine():
             disabled=not has_result
         )
         
-        # 📂 DLdata 작품 폴더 연동 및 저장
-        from core.progress_store import extract_rj_code
-        rj_code = st.session_state.rj_code.strip().upper() if ("rj_code" in st.session_state and st.session_state.rj_code) else extract_rj_code(st.session_state.file_name)
-        
-        if rj_code:
-            st.divider()
-            st.markdown(f"##### DLdata 폴더 연동 (`{rj_code}`)")
-            dldata_root = os.path.abspath("./DLdata")
-            os.makedirs(dldata_root, exist_ok=True)
-            target_dldata_dir = os.path.join(dldata_root, rj_code)
-            
-            if os.path.exists(target_dldata_dir) and os.path.isdir(target_dldata_dir):
-                st.markdown(f'<div class="status-box status-ok" style="font-size: 13px; font-weight: normal; padding: 8px; margin-bottom: 8px;"><b>DLdata 폴더 감지됨</b><br>경로: <code>{target_dldata_dir}</code></div>', unsafe_allow_html=True)
-                
-                if st.button("DLdata 폴더에 번역본 및 백업 자동 내보내기", width="stretch", type="primary", disabled=not has_result):
-                    try:
-                        # 1. Save translation text
-                        dldata_save_path = os.path.join(target_dldata_dir, download_name)
-                        with open(dldata_save_path, "w", encoding="utf-8") as f:
-                            f.write(st.session_state.translated_script)
-                        
-                        # 2. Copy progress.json and persona.json if they exist
-                        import shutil
-                        from core.progress_store import get_backup_path, get_persona_backup_path
-                        
-                        translation_backup_dir = os.path.join(target_dldata_dir, "translation_backup")
-                        os.makedirs(translation_backup_dir, exist_ok=True)
-                        
-                        prog_path = get_backup_path(st.session_state.file_name)
-                        if os.path.exists(prog_path):
-                            shutil.copy(prog_path, os.path.join(translation_backup_dir, "progress.json"))
-                            
-                        pers_path = get_persona_backup_path(st.session_state.file_name)
-                        if os.path.exists(pers_path):
-                            shutil.copy(pers_path, os.path.join(translation_backup_dir, "persona.json"))
-                            
-                        st.success(f"성공적으로 내보냈습니다!\n\n* 번역본 저장: `{dldata_save_path}`\n* 백업 아카이빙 완료: `{translation_backup_dir}/`")
-                    except Exception as e:
-                        st.error(f"DLdata 저장 중 오류 발생: {e}")
-            else:
-                st.markdown(f'<div class="status-box status-warn" style="font-size: 13px; font-weight: normal; padding: 8px; margin-bottom: 8px;"><b>DLdata 내 작품 폴더 없음</b><br>경로: <code>{target_dldata_dir}</code></div>', unsafe_allow_html=True)
-                if st.button(f"DLdata에 {rj_code} 폴더 직접 생성", width="stretch"):
-                    try:
-                        os.makedirs(target_dldata_dir, exist_ok=True)
-                        st.success(f"폴더를 성공적으로 생성했습니다: `{target_dldata_dir}`")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"폴더 생성 중 오류 발생: {e}")
-        
         st.divider()
         
         # 2. 프로젝트 백업 폴더에 즉시 저장

@@ -36,8 +36,7 @@ def load_model_cached(model_path: str):
         mx.clear_cache()
         gc.collect()
         
-        # Set cache limit to 0 to trigger immediate release of cache memory
-        mx.set_cache_limit(0)
+        
         
         # Check and write fallback video_preprocessor_config.json if missing
         if os.path.isdir(model_path):

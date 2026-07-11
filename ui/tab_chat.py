@@ -3,7 +3,31 @@ import os
 import json
 import re
 from core.chat_engine import ChatEngine
-from core.progress_store import list_saved_personas, safe_project_name
+from core.progress_store import list_saved_personas, safe_project_name, BACKUP_ROOT
+
+def save_chat_history(project_name: str, history: list):
+    if not project_name:
+        return
+    project_dir = os.path.join(BACKUP_ROOT, project_name)
+    if os.path.exists(project_dir):
+        path = os.path.join(project_dir, "chats.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[save_chat_history] 에러: {e}")
+
+def load_chat_history(project_name: str) -> list | None:
+    if not project_name:
+        return None
+    path = os.path.join(BACKUP_ROOT, project_name, "chats.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
 
 def format_action_brackets(text: str) -> str:
     """
@@ -28,12 +52,17 @@ def render_tab_chat(params: dict):
     if "chat_loaded_project" not in st.session_state:
         st.session_state.chat_loaded_project = ""
 
+    if "suggestion_chips" not in st.session_state:
+        st.session_state.suggestion_chips = []
+
     chat_engine = st.session_state.chat_engine
 
     # 사이드바에서 로드된 모델 동적 공유
     chat_engine.model = st.session_state.model
     chat_engine.processor = st.session_state.processor
     chat_engine.model_loaded = st.session_state.model_loaded
+
+    # 수동 로딩으로 전환 (프로젝트 로드 버튼 클릭 시에만 로드 및 AI 분석을 수행)
 
     # 2. 레이아웃 분할 (채팅 영역 2 : 정보 사이드바 1)
     col_chat, col_info = st.columns([2, 1])
@@ -64,21 +93,87 @@ def render_tab_chat(params: dict):
             # 프로젝트 로드 버튼
             load_col1, load_col2 = st.columns([1, 1])
             with load_col1:
-                if st.button("캐릭터 정보 로드", use_container_width=True):
-                    with st.spinner("프로젝트 페르소나 및 RAG 코퍼스 구축 중..."):
-                        chat_engine.load_project(selected_project)
-                        st.session_state.chat_loaded_project = selected_project
-                        
-                        # 대화 첫 시작일 경우 또는 프로젝트 변경 시 초기 메시지 설정
-                        st.session_state.chat_history = [
-                            {
-                                "role": "assistant",
-                                "content": f"안녕하세요! 저는 **'{selected_project}'** 대본 속 캐릭터입니다. 어떤 대화나 상황극을 시작할까요? [방긋 웃으며 시선을 맞춘다]"
-                            }
-                        ]
-                        st.session_state.last_rag_hits = []
-                        st.success(f"'{selected_project}' 로드 완료!")
-                        st.rerun()
+                if st.button("대화 페르소나 생성 및 로드", use_container_width=True):
+                    if not st.session_state.model_loaded:
+                        st.error("모델이 로드되지 않았습니다. 먼저 사이드바에서 모델을 로드해주세요!")
+                    else:
+                        with st.spinner("프로젝트 페르소나 및 RAG 코퍼스 구축 중..."):
+                            chat_engine.load_project(selected_project)
+                            st.session_state.chat_loaded_project = selected_project
+                            
+                            # 기존 저장된 대화 로그가 있다면 복원
+                            saved_history = load_chat_history(selected_project)
+                            if saved_history:
+                                st.session_state.chat_history = saved_history
+                            else:
+                                st.session_state.chat_history = [
+                                    {
+                                        "role": "assistant",
+                                        "content": f"안녕하세요! 저는 **'{selected_project}'** 대본 속 캐릭터입니다. 어떤 대화나 상황극을 시작할까요? [방긋 웃으며 시선을 맞춘다]"
+                                    }
+                                ]
+                            st.session_state.last_rag_hits = []
+                            
+                            # 대본 전체 요약 분석 및 캐싱
+                            if not chat_engine.script_summary and chat_engine.rag_items:
+                                from core.analyzer import analyze_script_summary
+                                with st.spinner("전체 대본 줄거리 및 상황을 AI가 요약 분석 중입니다..."):
+                                    try:
+                                        preview_chunks = [item["translated"] for item in chat_engine.rag_items]
+                                        summary = analyze_script_summary(
+                                            chat_engine.model,
+                                            chat_engine.processor,
+                                            metadata_text=st.session_state.get("metadata_text", ""),
+                                            script_preview="",
+                                            image_paths=None,
+                                            file_name=st.session_state.file_name or "script.txt",
+                                            chunks=preview_chunks
+                                        )
+                                        chat_engine.script_summary = summary
+                                        project_dir = os.path.join(BACKUP_ROOT, selected_project)
+                                        persona_path = os.path.join(project_dir, "persona.json")
+                                        if os.path.exists(persona_path):
+                                            with open(persona_path, "r", encoding="utf-8") as f:
+                                                p_data = json.load(f)
+                                            p_data["script_summary"] = summary
+                                            with open(persona_path, "w", encoding="utf-8") as f:
+                                                json.dump(p_data, f, ensure_ascii=False, indent=2)
+                                    except Exception as e:
+                                        print(f"대본 요약 자동 분석 실패: {e}")
+                            
+                            # 추천 대화 칩(Suggestion Chips) 리스트 관리
+                            suggestions = chat_engine.persona.get("suggestions", [])
+                            if not suggestions and chat_engine.rag_items:
+                                from core.analyzer import generate_suggestion_chips
+                                with st.spinner("작품 맞춤형 추천 질문을 분석하는 중..."):
+                                    try:
+                                        preview = "\n".join([f"{item['translated']}" for item in chat_engine.rag_items[:5]])[:4000]
+                                        suggestions = generate_suggestion_chips(chat_engine.model, chat_engine.processor, preview)
+                                        chat_engine.persona["suggestions"] = suggestions
+                                        project_dir = os.path.join(BACKUP_ROOT, selected_project)
+                                        persona_path = os.path.join(project_dir, "persona.json")
+                                        if os.path.exists(persona_path):
+                                            with open(persona_path, "r", encoding="utf-8") as f:
+                                                p_data = json.load(f)
+                                            if "persona" not in p_data:
+                                                p_data["persona"] = {}
+                                            p_data["persona"]["suggestions"] = suggestions
+                                            with open(persona_path, "w", encoding="utf-8") as f:
+                                                json.dump(p_data, f, ensure_ascii=False, indent=2)
+                                    except Exception as e:
+                                        print(f"추천 칩 생성 실패: {e}")
+                            
+                            if not suggestions:
+                                suggestions = [
+                                    "[조심스럽게 옆에 앉으며] 오늘 하루는 어땠어?",
+                                    "[가만히 눈을 맞추며] 네가 해주는 이야기를 듣고 싶어.",
+                                    "[머리를 쓰다듬어 달라는 듯이] 나 조금 피곤한데, 같이 있어줄래?",
+                                    "[미소를 지으며] 너랑 이렇게 단둘이 이야기하니까 정말 좋다."
+                                ]
+                            st.session_state.suggestion_chips = suggestions
+                            
+                            st.success(f"'{selected_project}' 로드 완료 및 페르소나 준비 완료!")
+                            st.rerun()
             with load_col2:
                 if st.button("대화 초기화", use_container_width=True):
                     if st.session_state.chat_loaded_project:
@@ -88,6 +183,7 @@ def render_tab_chat(params: dict):
                                 "content": f"대화가 초기화되었습니다. **'{st.session_state.chat_loaded_project}'** 상황극을 다시 이어갑니다. [정돈된 자세로 준비한다]"
                             }
                         ]
+                        save_chat_history(st.session_state.chat_loaded_project, st.session_state.chat_history)
                     else:
                         st.session_state.chat_history = [
                             {
@@ -132,6 +228,21 @@ def render_tab_chat(params: dict):
                 if len(valid_glossaries) > 10:
                     glossary_html += f"\n*외 {len(valid_glossaries) - 10}개의 용어가 추가 적용됨*"
                 st.markdown(glossary_html)
+
+            # 서사 제어 모니터 렌더링
+            st.markdown("---")
+            st.markdown("### 🧭 서사 제어 상태")
+            mode = chat_engine.last_steered_mode
+            score = chat_engine.last_max_score
+            
+            if "레일 추종" in mode:
+                st.markdown(f"**상태**: <span style='color:#4CAF50; font-weight:bold;'>🟢 {mode}</span>", unsafe_allow_html=True)
+                st.caption(f"대본 매칭도: `{score:.3f}` (임계값 0.15 이상)")
+            elif "탈레일" in mode:
+                st.markdown(f"**상태**: <span style='color:#FF9800; font-weight:bold;'>🟡 {mode}</span>", unsafe_allow_html=True)
+                st.caption(f"대본 매칭도: `{score:.3f}` (대본 이탈 - 애드립 및 복귀 유도)")
+            else:
+                st.markdown(f"**상태**: `대기 중` (첫 대화 대기)")
         else:
             st.markdown("---")
             st.info("👈 위의 '캐릭터 정보 로드' 버튼을 눌러 페르소나 카드와 단어장 정보를 표시하세요.")
@@ -195,11 +306,29 @@ def render_tab_chat(params: dict):
                     )
             st.markdown("---")
 
-        # 4.3 사용자 입력창 제어
+        # 4.3 추천 대화 칩 렌더링
+        if st.session_state.chat_loaded_project and st.session_state.suggestion_chips:
+            st.markdown("<div style='margin-bottom: 5px; font-weight: bold;'>💬 추천 대화 선택지 (클릭 시 즉시 전송)</div>", unsafe_allow_html=True)
+            cols = st.columns(len(st.session_state.suggestion_chips))
+            for idx, chip in enumerate(st.session_state.suggestion_chips):
+                with cols[idx]:
+                    if st.button(chip, key=f"sug_chip_{idx}", use_container_width=True):
+                        st.session_state.temp_user_input = chip
+                        st.rerun()
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+        # 4.4 사용자 입력창 제어
         input_disabled = not st.session_state.model_loaded or not st.session_state.chat_loaded_project
         placeholder_text = "대화를 입력하세요..." if not input_disabled else "VLM 모델과 캐릭터 정보가 모두 로드되어야 입력할 수 있습니다."
         
-        if user_query := st.chat_input(placeholder_text, disabled=input_disabled):
+        user_query = None
+        if st.session_state.get("temp_user_input"):
+            user_query = st.session_state.pop("temp_user_input")
+            
+        if not user_query:
+            user_query = st.chat_input(placeholder_text, disabled=input_disabled)
+            
+        if user_query:
             # 1. 사용자 메시지 즉시 렌더링 및 추가
             with st.chat_message("user"):
                 st.markdown(format_action_brackets(user_query))
@@ -224,6 +353,11 @@ def render_tab_chat(params: dict):
                 full_response = ""
                 rag_hits = []
                 
+                import time
+                start_time = None
+                token_count = 0
+                LIVE_STATUS = st.session_state.get("LIVE_STATUS")
+                
                 for chunk in stream_generator:
                     try:
                         event_data = json.loads(chunk.strip())
@@ -234,7 +368,16 @@ def render_tab_chat(params: dict):
                             rag_hits = data
                             st.session_state.last_rag_hits = rag_hits
                         elif event == "token":
+                            if token_count == 0:
+                                start_time = time.time()
                             full_response += data
+                            token_count += 1
+                            if start_time is not None:
+                                elapsed = time.time() - start_time
+                                if elapsed > 0:
+                                    speed = (token_count - 1) / elapsed
+                                    if LIVE_STATUS:
+                                        LIVE_STATUS.token_speed = speed
                             # 실시간으로 행동 지시문 변환하여 렌더링
                             message_placeholder.markdown(format_action_brackets(full_response) + "▌")
                         elif event == "error":
@@ -244,4 +387,5 @@ def render_tab_chat(params: dict):
                 
                 message_placeholder.markdown(format_action_brackets(full_response))
                 st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+                save_chat_history(st.session_state.chat_loaded_project, st.session_state.chat_history)
                 st.rerun()

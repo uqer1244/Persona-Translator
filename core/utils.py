@@ -258,6 +258,25 @@ def load_progress_backup(file_name: str) -> bool:
                 return True
     except Exception:
         pass
+
+    # 백업 로드가 실패했거나 데이터가 없는 최초 상황인 경우:
+    # 대본 입력이 완료되어 있으면 AI 채팅 탭 등 다른 화면에서 즉시 프로젝트를 로드할 수 있도록
+    # 최초 progress.json과 persona.json 파일을 생성해 줍니다.
+    if "original_script" in st.session_state and st.session_state.original_script.strip() and "chunks" in st.session_state and st.session_state.chunks:
+        try:
+            from core.progress_store import save_progress, save_persona_backup
+            save_progress(
+                file_name,
+                st.session_state.chunks,
+                st.session_state.translated_chunks
+            )
+            save_persona_backup(
+                file_name,
+                st.session_state.persona,
+                st.session_state.glossary_data
+            )
+        except Exception as e:
+            print(f"[load_progress_backup] 최초 백업 파일 생성 실패: {e}")
     return False
 
 def sync_chunks(chunk_size):
@@ -275,7 +294,7 @@ def sync_chunks(chunk_size):
     from core.translator import chunk_text, chunk_srt
     is_srt = st.session_state.file_name.endswith(".srt")
     if is_srt:
-        new_chunks = chunk_srt(st.session_state.original_script)
+        new_chunks = chunk_srt(st.session_state.original_script, target_chunk_size=chunk_size)
     else:
         new_chunks = chunk_text(st.session_state.original_script, chunk_size=chunk_size)
         
@@ -364,3 +383,43 @@ def trigger_streamlit_rerun(ctx):
             session_info.session.request_rerun(None)
     except Exception:
         pass
+
+
+def get_memory_stats():
+    """
+    시스템 RAM 및 Apple Silicon Unified GPU 메모리 점유율을 바이트 단위에서 GB 단위로 변환해 반환합니다.
+    """
+    import psutil
+    import mlx.core as mx
+
+    # 1. System RAM
+    try:
+        vm = psutil.virtual_memory()
+        ram_used = vm.used / (1024**3)
+        ram_total = vm.total / (1024**3)
+        ram_percent = vm.percent
+    except Exception:
+        ram_used, ram_total, ram_percent = 0.0, 0.0, 0.0
+
+    # 2. MLX metal Memory (Unified GPU Memory)
+    try:
+        active_mem = mx.get_active_memory() / (1024**3)
+        peak_mem = mx.get_peak_memory() / (1024**3)
+        cache_mem = mx.get_cache_memory() / (1024**3)
+    except Exception:
+        try:
+            active_mem = mx.metal.get_active_memory() / (1024**3)
+            peak_mem = mx.metal.get_peak_memory() / (1024**3)
+            cache_mem = mx.metal.get_cache_memory() / (1024**3)
+        except Exception:
+            active_mem, peak_mem, cache_mem = 0.0, 0.0, 0.0
+
+    return {
+        "ram_used_gb": ram_used,
+        "ram_total_gb": ram_total,
+        "ram_percent": ram_percent,
+        "mlx_active_gb": active_mem,
+        "mlx_peak_gb": peak_mem,
+        "mlx_cache_gb": cache_mem
+    }
+

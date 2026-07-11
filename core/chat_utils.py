@@ -63,46 +63,49 @@ class BM25Okapi:
 
 def build_rag_corpus(progress_data: dict) -> list[dict]:
     """
-    progress_data의 translated_chunks 및 original_chunks로부터 
+    progress_data의 original_chunks와 translated_chunks로부터 
     RAG 검색용 라인 단위의 코퍼스 리스트를 생성합니다.
+    번역본이 없는 경우 원문 대사로 대체하여 작동하도록 구성합니다.
     """
     translated_chunks = progress_data.get("translated_chunks", [])
     original_chunks = progress_data.get("original_chunks", [])
     
     rag_items = []
     
-    for chunk_idx, trans_chunk in enumerate(translated_chunks):
-        if not trans_chunk:
+    for chunk_idx, orig_chunk in enumerate(original_chunks):
+        if not orig_chunk:
             continue
-        
-        orig_chunk = original_chunks[chunk_idx] if chunk_idx < len(original_chunks) else ""
-        
-        trans_lines = trans_chunk.split("\n")
-        orig_lines = orig_chunk.split("\n") if orig_chunk else []
-        
-        for line_idx, t_line in enumerate(trans_lines):
-            t_line_stripped = t_line.strip()
-            if not t_line_stripped:
-                continue
             
-            # SRT 자막 포맷 무시 (타임코드 및 인덱스라인 제외)
-            if re.match(r'^\d+$', t_line_stripped):  # 숫자만 있는 라인 (인덱스)
-                continue
-            if "-->" in t_line_stripped:  # 타임스탬프 라인
+        trans_chunk = translated_chunks[chunk_idx] if chunk_idx < len(translated_chunks) else ""
+        
+        orig_lines = orig_chunk.split("\n")
+        trans_lines = trans_chunk.split("\n") if trans_chunk else []
+        
+        for line_idx, o_line in enumerate(orig_lines):
+            o_line_stripped = o_line.strip()
+            if not o_line_stripped:
                 continue
                 
-            o_line = orig_lines[line_idx].strip() if line_idx < len(orig_lines) else ""
+            # SRT 자막 포맷 무시 (타임코드 및 인덱스라인 제외)
+            if re.match(r'^\d+$', o_line_stripped):
+                continue
+            if "-->" in o_line_stripped:
+                continue
+                
+            t_line = trans_lines[line_idx].strip() if line_idx < len(trans_lines) else ""
             
-            # 검색 매칭을 위해 토큰화 진행
-            tokens = clean_and_tokenize(t_line_stripped)
+            # 검색 매칭용 텍스트 (번역문 우선, 없으면 원문 사용)
+            search_text = t_line if t_line else o_line_stripped
+            
+            tokens = clean_and_tokenize(search_text)
             if not tokens:
                 continue
                 
             rag_items.append({
                 "chunk_index": chunk_idx,
                 "line_index": line_idx,
-                "original": o_line,
-                "translated": t_line_stripped,
+                "original": o_line_stripped,
+                "translated": t_line if t_line else o_line_stripped,
                 "tokens": tokens
             })
             

@@ -79,12 +79,41 @@ def render_sidebar() -> dict:
         st.header("하이퍼파라미터")
         temperature = st.slider("Temperature (창의성/자유도)", 0.1, 1.0, 0.3, step=0.1, disabled=is_running)
         repetition_penalty = st.slider("Repetition Penalty (반복 억제력)", 1.0, 1.5, 1.1, step=0.05, disabled=is_running)
-        chunk_size = st.slider("청크 크기 (글자 수 기준)", 300, 1500, 800, step=50, disabled=is_running)
+        chunk_size = st.slider("청크 크기 (글자 수 기준)", 300, 1500, 400, step=50, disabled=is_running)
         translate_directives = st.checkbox("괄호 안 지시문 번역 ([whispering] -> [속삭임])", value=True, disabled=is_running)
         enable_coloring = st.checkbox("실시간 대본 채색 활성화 (지시문/화자 하이라이트)", value=True)
 
     # Sync chunks with original script
     sync_chunks(chunk_size)
+
+    # 📈 실시간 리소스 및 성능 리포트
+    st.sidebar.divider()
+    st.sidebar.subheader("📈 실시간 시스템 및 성능")
+    
+    from core.utils import get_memory_stats
+    mem = get_memory_stats()
+    
+    # RAM 사용량 표시
+    st.sidebar.markdown(f"**시스템 RAM 사용량** ({mem['ram_percent']:.1f}%)")
+    st.sidebar.progress(mem['ram_percent'] / 100.0)
+    st.sidebar.caption(f"{mem['ram_used_gb']:.2f} GB / {mem['ram_total_gb']:.2f} GB 사용 중")
+    
+    # MLX Unified Memory 사용량 표시
+    if mem['mlx_active_gb'] > 0 or mem['mlx_peak_gb'] > 0:
+        st.sidebar.markdown(f"**Unified GPU 메모리 (MLX)**")
+        st.sidebar.caption(f"Active: {mem['mlx_active_gb']:.2f} GB / Peak: {mem['mlx_peak_gb']:.2f} GB")
+        ratio = min(1.0, mem['mlx_active_gb'] / mem['mlx_peak_gb']) if mem['mlx_peak_gb'] > 0 else 0.0
+        st.sidebar.progress(ratio)
+        if mem['mlx_cache_gb'] > 0:
+            st.sidebar.caption(f"Cached Memory: {mem['mlx_cache_gb']:.2f} GB")
+    else:
+        st.sidebar.caption("Unified GPU 메모리 정보 (대기 중)")
+
+    # 실시간 추론 속도 표시
+    token_speed = 0.0
+    if "LIVE_STATUS" in st.session_state and hasattr(st.session_state.LIVE_STATUS, "token_speed"):
+        token_speed = st.session_state.LIVE_STATUS.token_speed
+    st.sidebar.metric("실시간 토큰 생성 속도", f"{token_speed:.2f} tok/s")
     
     return {
         "temperature": temperature,

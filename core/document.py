@@ -65,7 +65,7 @@ def clean_markdown(text: str) -> str:
     return text.strip()
 
 
-def chunk_srt(srt_text: str, target_chunk_size: int = 800) -> list[str]:
+def chunk_srt(srt_text: str, target_chunk_size: int = 400) -> list[str]:
     """
     Dynamically groups SRT subtitle blocks based on target character count to limit LLM calls and VRAM spike.
     """
@@ -102,7 +102,7 @@ def chunk_srt(srt_text: str, target_chunk_size: int = 800) -> list[str]:
     return chunks
 
 
-def chunk_text(text: str, chunk_size: int = 800) -> list[str]:
+def chunk_text(text: str, chunk_size: int = 400) -> list[str]:
     """
     Splits plain text into scene-aware chunks. Detects scene transitions, BGM/SE markers,
     or speaker changes to split gracefully rather than cutting in the middle of sentences.
