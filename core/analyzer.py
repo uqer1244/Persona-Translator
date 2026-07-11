@@ -18,8 +18,6 @@ def _generate_text(
     temp: float = 0.1,
     repetition_penalty: float = 1.1,
 ) -> str:
-    from mlx_vlm.generate import stream_generate
-    from mlx_vlm.prompt_utils import apply_chat_template
     from core.utils import has_repetition
 
     image_paths = image_paths or []
@@ -28,6 +26,56 @@ def _generate_text(
     prompt_content = prompt
     if len(image_paths) > 0 and "<image>" not in prompt:
         prompt_content = "<image>\n" + prompt
+
+    try:
+        from core.openrouter import OpenRouterClient
+        if isinstance(model, OpenRouterClient):
+            import os
+            import base64
+            content = []
+            if image_paths:
+                for img_path in image_paths:
+                    if os.path.exists(img_path):
+                        with open(img_path, "rb") as f:
+                            b64_data = base64.b64encode(f.read()).decode("utf-8")
+                        mime = "image/png" if img_path.lower().endswith(".png") else "image/jpeg"
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime};base64,{b64_data}"
+                            }
+                        })
+            if content:
+                content.append({"type": "text", "text": prompt_content})
+                messages = [{"role": "user", "content": content}]
+            else:
+                messages = [{"role": "user", "content": prompt_content}]
+                
+            max_retries = 3
+            for retry in range(max_retries):
+                current_temp = temp
+                if retry > 0:
+                    current_temp = min(0.7, temp + 0.2 * retry)
+                try:
+                    generator = model.generate_stream(messages, temp=current_temp, max_tokens=max_tokens)
+                    output = ""
+                    for response in generator:
+                        output += response.text
+                        if has_repetition(output):
+                            from core.utils import strip_repetition
+                            output = strip_repetition(output)
+                            break
+                    from core.document import clean_markdown
+                    return clean_markdown(output)
+                except Exception as e:
+                    if retry == max_retries - 1:
+                        raise e
+                    print(f"[OpenRouter RETRY] Error occurred, retrying: {e}")
+    except ImportError:
+        pass
+
+    from mlx_vlm.generate import stream_generate
+    from mlx_vlm.prompt_utils import apply_chat_template
 
     messages = [{"role": "user", "content": prompt_content}]
     formatted_prompt = apply_chat_template(
@@ -190,6 +238,13 @@ def analyze_images(model, processor, image_paths: list[str] | None = None) -> st
     """
     if not image_paths:
         return ""
+
+    try:
+        from core.openrouter import OpenRouterClient
+        if isinstance(model, OpenRouterClient):
+            return ""
+    except ImportError:
+        pass
 
     notes = []
     for idx, image_path in enumerate(image_paths, start=1):

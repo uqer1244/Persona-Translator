@@ -116,6 +116,7 @@ def build_translation_prompt(
 [최종 번역 결과]
 - 원본 대본의 행 단위 구조(라인 바이 라인) 및 줄바꿈 구조, 특수 문자, 화자 콜론 기호(: 또는 ：), 괄호 지시문 기호 형태를 그대로 완벽하게 유지하여 한국어로 번역하십시오.
 - 절대 대본을 소설 서술형 문장(예: ~라고 속삭였다)으로 풀거나 합치지 말고, 대본 형식 그대로 번역하십시오.
+- **[경고 - 절대 준수] 일본어 원문은 절대 출력에 포함하지 마십시오. 오직 번역된 한국어 텍스트만 한 줄씩 출력해야 합니다. 일본어 원문과 한국어 번역문을 위아래로 동시에 나열하는 행위는 절대로 금지됩니다.**
 
 {context_str}
 [번역할 대본]
@@ -216,6 +217,7 @@ def build_retranslation_prompt(
 [최종 번역 결과]
 - 원본 대본의 행 단위 구조(라인 바이 라인) 및 줄바꿈 구조, 특수 문자, 화자 콜론 기호(: 또는 ：), 괄호 지시문 기호 형태를 그대로 완벽하게 유지하여 한국어로 번역 및 교정하십시오.
 - 절대 대본을 소설 서술형 문장(예: ~라고 속삭였다)으로 풀거나 합치지 말고, 대본 형식 그대로 번역하십시오.
+- **[경고 - 절대 준수] 일본어 원문은 절대 출력에 포함하지 마십시오. 오직 번역된 한국어 텍스트만 한 줄씩 출력해야 합니다. 일본어 원문과 한국어 번역문을 위아래로 동시에 나열하는 행위는 절대로 금지됩니다.**
 
 {context_str}
 
@@ -244,9 +246,31 @@ def stream_prompt(
     cancel_token: dict = None,
     token_callback=None,
 ) -> str | None:
+    from core.utils import has_repetition, strip_repetition
+
+    try:
+        from core.openrouter import OpenRouterClient
+        if isinstance(model, OpenRouterClient):
+            messages = [{"role": "user", "content": prompt}]
+            generator = model.generate_stream(messages, temp=temp, max_tokens=max_tokens)
+            output = ""
+            for response in generator:
+                if cancel_token and cancel_token.get("cancel"):
+                    return None
+                output += response.text
+                if token_callback:
+                    token_callback(response.text, output)
+                    
+                if has_repetition(output):
+                    print(f"[TRANSLATION WARNING] Repetition loop detected! Stopping stream.")
+                    cleaned_output = strip_repetition(output)
+                    raise ValueError(f"RepetitionLoopDetected:{cleaned_output}")
+            return clean_markdown(output)
+    except ImportError:
+        pass
+
     from mlx_vlm.generate import stream_generate
     from mlx_vlm.prompt_utils import apply_chat_template
-    from core.utils import has_repetition, strip_repetition
 
     messages = [{"role": "user", "content": prompt}]
     formatted_prompt = apply_chat_template(
@@ -294,13 +318,19 @@ def translate_one_chunk(
     token_callback=None,
 ) -> str | tuple[str, str] | None:
     try:
+        from core.openrouter import OpenRouterClient
+        is_or = isinstance(model, OpenRouterClient)
+    except ImportError:
+        is_or = False
+
+    try:
         result = stream_prompt(
             model,
             processor,
             prompt,
             temp=temp,
             repetition_penalty=repetition_penalty,
-            max_tokens=1500,
+            max_tokens=3000 if is_or else 1500,
             cancel_token=cancel_token,
             token_callback=token_callback,
         )

@@ -42,3 +42,11 @@ master_glossary.json
 
 /plans
 /projects
+
+# Environment variables
+.env
+.env.*
+
+# Test scripts
+test_openrouter.py
+.test_*

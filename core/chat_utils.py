@@ -134,6 +134,15 @@ def summarize_chat_history(model, processor, history_list: list[dict], model_pat
 [한 줄 요약]"""
 
     try:
+        from core.openrouter import OpenRouterClient
+        if isinstance(model, OpenRouterClient):
+            messages = [{"role": "user", "content": prompt}]
+            response_obj = model.generate(messages, temp=0.3, max_tokens=150)
+            return response_obj.text.strip()
+    except ImportError:
+        pass
+
+    try:
         from mlx_vlm.utils import generate
         # mlx_vlm을 사용한 동기식 요약 텍스트 생성
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]

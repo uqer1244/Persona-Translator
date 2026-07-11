@@ -3,9 +3,6 @@ from core.model_manager import clear_mlx_cache as _clear_mlx_cache
 
 
 def _refine_chunk(model, processor, translated_text: str, persona: dict, chunk_idx: int, total_chunks: int) -> str:
-    from mlx_vlm import generate
-    from mlx_vlm.prompt_utils import apply_chat_template
-
     prompt = f"""
 당신은 대본 번역의 완성도를 높이는 교정 에디터입니다.
 아래 번역 청크만 교정하세요. 전체 대본 중 {chunk_idx + 1}/{total_chunks}번째 청크입니다.
@@ -23,6 +20,18 @@ def _refine_chunk(model, processor, translated_text: str, persona: dict, chunk_i
 [교정할 번역 청크]
 {translated_text}
 """
+    try:
+        from core.openrouter import OpenRouterClient
+        if isinstance(model, OpenRouterClient):
+            messages = [{"role": "user", "content": prompt}]
+            refined_output_obj = model.generate(messages, temp=0.2, max_tokens=600)
+            return clean_markdown(refined_output_obj.text)
+    except ImportError:
+        pass
+
+    from mlx_vlm import generate
+    from mlx_vlm.prompt_utils import apply_chat_template
+
     messages = [{"role": "user", "content": prompt}]
     formatted_prompt = apply_chat_template(
         processor,

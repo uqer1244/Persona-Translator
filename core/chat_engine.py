@@ -300,9 +300,6 @@ class ChatEngine:
             yield json.dumps({"event": "error", "data": "Model not loaded. Please load a model first."}, ensure_ascii=False) + "\n"
             return
 
-        from mlx_vlm.generate import stream_generate
-        from mlx_vlm.prompt_utils import apply_chat_template
-
         # 시스템 프롬프트 및 RAG 계산
         system_prompt, rag_hits = self.build_system_prompt(user_message, history)
 
@@ -319,6 +316,19 @@ class ChatEngine:
             
         # 현재 메시지 추가
         messages.append({"role": "user", "content": user_message})
+
+        try:
+            from core.openrouter import OpenRouterClient
+            if isinstance(self.model, OpenRouterClient):
+                generator = self.model.generate_stream(messages, temp=temp, max_tokens=1000)
+                for response in generator:
+                    yield json.dumps({"event": "token", "data": response.text}, ensure_ascii=False) + "\n"
+                return
+        except ImportError:
+            pass
+
+        from mlx_vlm.generate import stream_generate
+        from mlx_vlm.prompt_utils import apply_chat_template
 
         try:
             formatted_prompt = apply_chat_template(
