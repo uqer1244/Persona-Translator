@@ -151,7 +151,7 @@ def render_tab_persona():
             with col_ai1:
                 st.subheader("용어집 (Word Mapping)")
             with col_ai2:
-                if st.button("🪄 AI 고유명사 자동 분류", use_container_width=True, help="LLM을 활용해 용어집의 단어 중 고유명사(인물/지명/고유개념)를 찾아 체크합니다."):
+                if st.button("🪄 AI 고유명사 자동 분류", width='stretch', help="LLM을 활용해 용어집의 단어 중 고유명사(인물/지명/고유개념)를 찾아 체크합니다."):
                     if not st.session_state.model_loaded:
                         st.error("먼저 사이드바에서 모델을 로드해주세요!")
                     elif not st.session_state.glossary_data:

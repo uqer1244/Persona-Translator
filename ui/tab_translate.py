@@ -414,7 +414,8 @@ def render_tab_translate(params: dict):
                                             persona=st.session_state.persona,
                                             glossary=glossary_dict,
                                             is_srt=is_srt,
-                                            translate_directives=translate_directives
+                                            translate_directives=translate_directives,
+                                            file_name=st.session_state.file_name
                                         )
                                     else:
                                         prompt = build_translation_prompt(
@@ -424,7 +425,8 @@ def render_tab_translate(params: dict):
                                             persona=st.session_state.persona,
                                             glossary=glossary_dict,
                                             is_srt=is_srt,
-                                            translate_directives=translate_directives
+                                            translate_directives=translate_directives,
+                                            file_name=st.session_state.file_name
                                         )
                                         
                                     def run_single_task(model, processor, prompt, chunk_idx, cancel_token, ctx):

@@ -21,6 +21,146 @@ def extract_final_translation(text: str) -> str:
     return text.strip()
 
 
+def parse_srt_block(block: str):
+    lines = block.strip().split("\n")
+    timecode_idx = -1
+    for i, line in enumerate(lines):
+        if "-->" in line:
+            timecode_idx = i
+            break
+            
+    if timecode_idx == -1:
+        return None, block
+        
+    header_lines = lines[:timecode_idx+1]
+    dialog_lines = lines[timecode_idx+1:]
+    
+    header = "\n".join(header_lines)
+    dialog = "\n".join(dialog_lines)
+    return header, dialog
+
+
+def parse_lrc_line(line: str):
+    match = re.match(r'^(\[\d{2}:\d{2}[:\.]\d{2,3}\])(.*)', line.strip())
+    if match:
+        return match.group(1), match.group(2)
+    return None, line
+
+
+def preprocess_subtitle_chunk(chunk_text: str, start_index: int = 1, file_name: str = "") -> tuple[str, dict, int]:
+    is_vtt = file_name.lower().endswith(".vtt") or "WEBVTT" in chunk_text
+    is_srt = file_name.lower().endswith(".srt") or "-->" in chunk_text
+    is_lrc = file_name.lower().endswith(".lrc") or (not is_srt and not is_vtt and re.search(r'^\[\d{2}:\d{2}', chunk_text, re.MULTILINE))
+
+    headers_map = {}
+    simplified_blocks = []
+    current_idx = start_index
+
+    if is_srt or is_vtt:
+        chunk_text = chunk_text.replace("\r\n", "\n")
+        raw_blocks = chunk_text.split("\n\n")
+        
+        for block in raw_blocks:
+            if not block.strip():
+                continue
+            
+            if block.strip() == "WEBVTT":
+                headers_map["WEBVTT"] = "WEBVTT"
+                simplified_blocks.append("[#WEBVTT]")
+                continue
+                
+            header, dialog = parse_srt_block(block)
+            if header:
+                headers_map[str(current_idx)] = header
+                simplified_blocks.append(f"[#{current_idx}] {dialog}")
+                current_idx += 1
+            else:
+                simplified_blocks.append(dialog)
+                
+        simplified_text = "\n\n".join(simplified_blocks)
+        
+    elif is_lrc:
+        chunk_text = chunk_text.replace("\r\n", "\n")
+        lines = chunk_text.split("\n")
+        
+        for line in lines:
+            if not line.strip():
+                simplified_blocks.append("")
+                continue
+            header, dialog = parse_lrc_line(line)
+            if header:
+                headers_map[str(current_idx)] = header
+                simplified_blocks.append(f"[#{current_idx}] {dialog}")
+                current_idx += 1
+            else:
+                simplified_blocks.append(line)
+                
+        simplified_text = "\n".join(simplified_blocks)
+        
+    else:
+        simplified_text = chunk_text
+
+    return simplified_text, headers_map, current_idx
+
+
+def postprocess_subtitle_chunk(llm_output: str, headers_map: dict, file_name: str = "") -> str:
+    if not headers_map:
+        return llm_output
+
+    is_vtt = file_name.lower().endswith(".vtt")
+    is_lrc = file_name.lower().endswith(".lrc")
+
+    pattern = re.compile(r'\[#(\w+)\]\s*(.*?)(?=\[#\w+\]|$)', re.DOTALL)
+    matches = pattern.findall(llm_output)
+
+    reconstructed_blocks = []
+    matched_indices = set()
+
+    for idx_str, text in matches:
+        idx_str = idx_str.strip()
+        text = text.strip()
+        
+        if idx_str == "WEBVTT":
+            reconstructed_blocks.append("WEBVTT")
+            matched_indices.add("WEBVTT")
+            continue
+            
+        if idx_str in headers_map:
+            header = headers_map[idx_str]
+            if is_lrc:
+                reconstructed_blocks.append(f"{header}{text}")
+            else:
+                reconstructed_blocks.append(f"{header}\n{text}")
+            matched_indices.add(idx_str)
+
+    # Sequential mapping fallback if tags are missing or incorrect
+    if len(matched_indices) < len(headers_map):
+        cleaned_text = re.sub(r'\[#\w+\]', '', llm_output).strip()
+        
+        if is_lrc:
+            llm_blocks = [b.strip() for b in cleaned_text.split("\n") if b.strip()]
+        else:
+            llm_blocks = [b.strip() for b in cleaned_text.split("\n\n") if b.strip()]
+            
+        reconstructed_blocks = []
+        sorted_keys = sorted([k for k in headers_map.keys() if k != "WEBVTT"], key=lambda x: int(x))
+        if "WEBVTT" in headers_map:
+            reconstructed_blocks.append("WEBVTT")
+            
+        for i, key in enumerate(sorted_keys):
+            header = headers_map[key]
+            trans_block = llm_blocks[i] if i < len(llm_blocks) else ""
+            if is_lrc:
+                reconstructed_blocks.append(f"{header}{trans_block}")
+            else:
+                reconstructed_blocks.append(f"{header}\n{trans_block}")
+                
+    if is_lrc:
+        return "\n".join(reconstructed_blocks)
+    else:
+        return "\n\n".join(reconstructed_blocks)
+
+
 from core.document import (
     extract_text_from_pdf,
     clean_pdf_linebreaks,
@@ -36,7 +176,8 @@ def build_translation_prompt(
     persona: dict,
     glossary: dict,
     is_srt: bool,
-    translate_directives: bool
+    translate_directives: bool,
+    file_name: str = ""
 ) -> str:
     # 1. 페르소나 제약 사항 구성
     persona_str = f"- 말투/어조: {persona.get('tone', '자연스러운 말투')}\n"
@@ -58,13 +199,17 @@ def build_translation_prompt(
             glossary_str = "\n[용어집 번역 규칙 (반드시 준수)]\n" + "\n".join(glossary_items) + "\n"
             
     # 3. 형식 가이드라인 구성
-    if is_srt:
-        format_instruction = """
+    is_vtt = file_name.lower().endswith(".vtt")
+    is_lrc = file_name.lower().endswith(".lrc")
+
+    if is_srt or is_vtt or is_lrc:
+        file_format_name = "SRT/WebVTT 자막" if (is_srt or is_vtt) else "LRC 가사/대사"
+        format_instruction = f"""
 [형식 규칙]
-- 현재 번역할 대본은 SRT 자막 형식입니다. 
-- 자막 인덱스(예: 1)와 타임코드(예: 00:00:01,000 --> 00:00:04,000)는 절대로 수정하거나 번역하지 말고 원본 그대로 유지하세요.
-- 오직 자막 텍스트(대사) 부분만 번역하세요.
-- 빈 줄 구조(\\n\\n)와 자막 파일의 틀을 정확하게 유지하여 출력하세요.
+- 현재 번역할 대본은 {file_format_name} 형식에서 시간 정보를 간소화한 상태입니다.
+- 각 블록 맨 앞에 표기된 블록 태그(예: [#1], [#2], [#WEBVTT] 등)는 절대로 수정하거나 번역하지 말고, 출력 결과에서도 동일한 위치에 그대로 유지하세요.
+- 오직 블록 태그 뒷부분의 대사/텍스트 내용만 자연스러운 한국어로 번역하세요.
+- 원본의 빈 줄 구조와 형식을 정확히 유지하여 출력하세요.
 """
     else:
         format_instruction = """
@@ -136,7 +281,8 @@ def build_retranslation_prompt(
     persona: dict,
     glossary: dict,
     is_srt: bool,
-    translate_directives: bool
+    translate_directives: bool,
+    file_name: str = ""
 ) -> str:
     # 1. 페르소나 제약 사항 구성
     persona_str = f"- 말투/어조: {persona.get('tone', '자연스러운 말투')}\n"
@@ -158,13 +304,17 @@ def build_retranslation_prompt(
             glossary_str = "\n[용어집 번역 규칙 (반드시 준수)]\n" + "\n".join(glossary_items) + "\n"
             
     # 3. 형식 가이드라인 구성
-    if is_srt:
-        format_instruction = """
+    is_vtt = file_name.lower().endswith(".vtt")
+    is_lrc = file_name.lower().endswith(".lrc")
+
+    if is_srt or is_vtt or is_lrc:
+        file_format_name = "SRT/WebVTT 자막" if (is_srt or is_vtt) else "LRC 가사/대사"
+        format_instruction = f"""
 [형식 규칙]
-- 현재 번역할 대본은 SRT 자막 형식입니다. 
-- 자막 인덱스(예: 1)와 타임코드(예: 00:00:01,000 --> 00:00:04,000)는 절대로 수정하거나 번역하지 말고 원본 그대로 유지하세요.
-- 오직 자막 텍스트(대사) 부분만 번역하세요.
-- 빈 줄 구조(\\n\\n)와 자막 파일의 틀을 정확하게 유지하여 출력하세요.
+- 현재 번역할 대본은 {file_format_name} 형식에서 시간 정보를 간소화한 상태입니다.
+- 각 블록 맨 앞에 표기된 블록 태그(예: [#1], [#2], [#WEBVTT] 등)는 절대로 수정하거나 번역하지 말고, 출력 결과에서도 동일한 위치에 그대로 유지하세요.
+- 오직 블록 태그 뒷부분의 대사/텍스트 내용만 자연스러운 한국어로 번역하세요.
+- 원본의 빈 줄 구조와 형식을 정확히 유지하여 출력하세요.
 """
     else:
         format_instruction = """
@@ -363,14 +513,17 @@ def translate_script(
     repetition_penalty: float = 1.1,
     existing_translations: list[str] = None,
     cancel_token: dict = None,
-    progress_callback=None
+    progress_callback=None,
+    file_name: str = ""
 ) -> str:
     """
     대본을 청크 단위로 분할하여 슬라이딩 윈도우 방식으로 번역을 진행하며 진행 상황을 콜백으로 호출합니다.
     이미 번역된 청크(existing_translations)는 건너뛰며 흐름을 이어갑니다.
     중단 요청(cancel_token)이 감지되면 즉시 중지합니다.
     """
-    if is_srt:
+    is_subtitle = is_srt or file_name.endswith(".vtt") or file_name.endswith(".lrc")
+
+    if is_srt or file_name.endswith(".vtt"):
         chunks = chunk_srt(script, target_chunk_size=chunk_size)
     else:
         chunks = chunk_text(script, chunk_size=chunk_size)
@@ -380,31 +533,47 @@ def translate_script(
     
     prev_original = ""
     prev_translated = ""
+    sub_index = 1
     
     for idx, chunk in enumerate(chunks):
         # 중단 토큰 확인
         if cancel_token and cancel_token.get("cancel"):
             break
 
+        if is_subtitle:
+            simplified_chunk, headers_map, next_sub_index = preprocess_subtitle_chunk(chunk, sub_index, file_name)
+            sub_index = next_sub_index
+        else:
+            simplified_chunk = chunk
+            headers_map = {}
+
         # 이미 번역된 결과가 존재하는 청크는 LLM 호출을 건너뛰고 컨텍스트만 업데이트
         if existing_translations and idx < len(existing_translations) and isinstance(existing_translations[idx], str) and existing_translations[idx].strip():
-            chunk_translation_clean = existing_translations[idx]
-            translated_chunks.append(chunk_translation_clean)
+            chunk_translation_reconstructed = existing_translations[idx]
+            translated_chunks.append(chunk_translation_reconstructed)
             prev_original = chunk
-            prev_translated = chunk_translation_clean
+            prev_translated = chunk_translation_reconstructed
             if progress_callback:
                 # UI 갱신을 위해 콜백 전달 (이미 번역 완료됨 표시)
-                progress_callback("", idx, total_chunks, chunk_translation_clean, True)
+                progress_callback("", idx, total_chunks, chunk_translation_reconstructed, True)
             continue
 
+        if is_subtitle:
+            prev_orig_simplified, _, _ = preprocess_subtitle_chunk(prev_original, 1, file_name)
+            prev_trans_simplified, _, _ = preprocess_subtitle_chunk(prev_translated, 1, file_name)
+        else:
+            prev_orig_simplified = prev_original
+            prev_trans_simplified = prev_translated
+
         prompt = build_translation_prompt(
-            current_chunk=chunk,
-            prev_original=prev_original,
-            prev_translated=prev_translated,
+            current_chunk=simplified_chunk,
+            prev_original=prev_orig_simplified,
+            prev_translated=prev_trans_simplified,
             persona=persona,
             glossary=glossary,
             is_srt=is_srt,
-            translate_directives=translate_directives
+            translate_directives=translate_directives,
+            file_name=file_name
         )
         
         max_retries = 3
@@ -462,18 +631,24 @@ def translate_script(
             if cancel_token and cancel_token.get("cancel"):
                 break
             chunk_translation_clean = f"[번역 실패 - 원문 대체] {chunk}"
+            chunk_translation_reconstructed = chunk_translation_clean
         else:
             chunk_translation_clean = extract_final_translation(chunk_translation_clean)
+            if is_subtitle:
+                chunk_translation_reconstructed = postprocess_subtitle_chunk(chunk_translation_clean, headers_map, file_name)
+            else:
+                chunk_translation_reconstructed = chunk_translation_clean
 
-        translated_chunks.append(chunk_translation_clean)
+        translated_chunks.append(chunk_translation_reconstructed)
         
         prev_original = chunk
-        prev_translated = chunk_translation_clean
+        prev_translated = chunk_translation_reconstructed
         
         if progress_callback:
-            progress_callback("", idx, total_chunks, chunk_translation_clean, True)
+            progress_callback("", idx, total_chunks, chunk_translation_reconstructed, True)
         
-    if is_srt:
+    is_vtt = file_name.lower().endswith(".vtt")
+    if is_srt or is_vtt:
         return "\n\n".join(translated_chunks)
     else:
         return "\n".join(translated_chunks)

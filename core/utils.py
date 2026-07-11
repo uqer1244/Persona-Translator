@@ -236,7 +236,7 @@ def load_progress_backup(file_name: str) -> bool:
                 st.session_state.translated_chunks = [c if isinstance(c, str) else "" for c in raw_trans]
                 
                 # 백업 데이터 불러올 때 각 청크별 위젯 세션 상태와 전체 번역본 동기화
-                is_srt = file_name.endswith(".srt")
+                is_srt = file_name.endswith(".srt") or file_name.endswith(".vtt")
                 if is_srt:
                     st.session_state.translated_script = "\n\n".join([c for c in st.session_state.translated_chunks if c])
                 else:
@@ -292,7 +292,7 @@ def sync_chunks(chunk_size):
         return
         
     from core.translator import chunk_text, chunk_srt
-    is_srt = st.session_state.file_name.endswith(".srt")
+    is_srt = st.session_state.file_name.endswith(".srt") or st.session_state.file_name.endswith(".vtt")
     if is_srt:
         new_chunks = chunk_srt(st.session_state.original_script, target_chunk_size=chunk_size)
     else:
@@ -318,7 +318,7 @@ def extract_script_structure(script: str, file_name: str = "", max_chars_per_tra
         return ""
         
     # SRT 파일명이거나 본문 내에 SRT 타임라인 화살표(-->)가 있는 경우, 자막 인덱스 숫자가 트랙으로 오진되는 것을 방지
-    is_srt = file_name.lower().endswith(".srt") or "-->" in script
+    is_srt = file_name.lower().endswith((".srt", ".vtt")) or "-->" in script
     
     if is_srt:
         return script[:max_total_chars]

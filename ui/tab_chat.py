@@ -93,7 +93,7 @@ def render_tab_chat(params: dict):
             # 프로젝트 로드 버튼
             load_col1, load_col2 = st.columns([1, 1])
             with load_col1:
-                if st.button("대화 페르소나 생성 및 로드", use_container_width=True):
+                if st.button("대화 페르소나 생성 및 로드", width='stretch'):
                     if not st.session_state.model_loaded:
                         st.error("모델이 로드되지 않았습니다. 먼저 사이드바에서 모델을 로드해주세요!")
                     else:
@@ -175,7 +175,7 @@ def render_tab_chat(params: dict):
                             st.success(f"'{selected_project}' 로드 완료 및 페르소나 준비 완료!")
                             st.rerun()
             with load_col2:
-                if st.button("대화 초기화", use_container_width=True):
+                if st.button("대화 초기화", width='stretch'):
                     if st.session_state.chat_loaded_project:
                         st.session_state.chat_history = [
                             {
@@ -312,7 +312,7 @@ def render_tab_chat(params: dict):
             cols = st.columns(len(st.session_state.suggestion_chips))
             for idx, chip in enumerate(st.session_state.suggestion_chips):
                 with cols[idx]:
-                    if st.button(chip, key=f"sug_chip_{idx}", use_container_width=True):
+                    if st.button(chip, key=f"sug_chip_{idx}", width='stretch'):
                         st.session_state.temp_user_input = chip
                         st.rerun()
             st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)

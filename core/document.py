@@ -1,11 +1,44 @@
 import re
 from pypdf import PdfReader
+from pypdf.generic import NumberObject
+
+# Monkey patch pypdf to allow parsing PDFs with long number/float sequences (exceeding default 64 chars limit)
+NumberObject._LENGTH_LIMIT = 10240
+
 
 
 def extract_text_from_pdf(pdf_file) -> str:
     """
-    Extracts text from PDF file.
+    Extracts text from PDF file using pdfplumber, falling back to pypdf if necessary.
     """
+    if hasattr(pdf_file, "seek"):
+        try:
+            pdf_file.seek(0)
+        except Exception:
+            pass
+
+    # Try pdfplumber first
+    try:
+        import pdfplumber
+        with pdfplumber.open(pdf_file) as pdf:
+            text_list = []
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    text_list.append(text)
+            if text_list:
+                return "\n".join(text_list)
+    except Exception as e:
+        # Fallback logging (invisible to user unless printed)
+        print(f"[pdfplumber error, falling back to pypdf] {e}")
+
+    # Fallback to pypdf
+    if hasattr(pdf_file, "seek"):
+        try:
+            pdf_file.seek(0)
+        except Exception:
+            pass
+
     reader = PdfReader(pdf_file)
     text_list = []
     for page in reader.pages:
