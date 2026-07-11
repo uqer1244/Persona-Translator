@@ -210,7 +210,7 @@ if st.session_state.last_loaded_project_dir != current_dir:
 
 # Main Title
 st.title("PersonaASMR-Translator")
-st.markdown("로컬 MLX VLM (Gemma 4 12B) 기반 NSFW ASMR 맞춤형 페르소나 번역 시스템")
+st.markdown("로컬 MLX VLM (Gemma 4 12B) 기반 ASMR 맞춤형 페르소나 번역 시스템")
 
 script_chars = len(st.session_state.original_script.strip())
 glossary_count = len([item for item in st.session_state.glossary_data if item.get("원어 (Source)")])
