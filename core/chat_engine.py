@@ -36,9 +36,45 @@ class ChatEngine:
         mx.clear_cache()
         gc.collect()
 
-        print(f"[ChatEngine] Loading model from {model_path}...")
-        from mlx_vlm import load
-        self.model, self.processor = load(model_path)
+        # Read config.json to decide mlx_lm vs mlx_vlm loading
+        is_vlm = False
+        if os.path.isdir(model_path):
+            config_json_path = os.path.join(model_path, "config.json")
+            if os.path.exists(config_json_path):
+                try:
+                    import json
+                    with open(config_json_path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                    
+                    model_type = cfg.get("model_type", "").lower()
+                    archs = [a.lower() for a in cfg.get("architectures", [])]
+                    is_qwen = "qwen" in model_type or any("qwen" in a for a in archs) or "qwen" in model_path.lower()
+                    
+                    if is_qwen:
+                        is_vlm = False
+                    elif cfg.get("language_model_only", False):
+                        is_vlm = False
+                    elif "vision_config" in cfg or "vision_tower" in cfg:
+                        is_vlm = True
+                    elif any("ConditionalGeneration" in a for a in cfg.get("architectures", [])):
+                        is_vlm = True
+                except Exception:
+                    pass
+
+        try:
+            if is_vlm:
+                from mlx_vlm import load
+                self.model, self.processor = load(model_path)
+            else:
+                from mlx_lm import load
+                self.model, self.processor = load(model_path)
+        except Exception as e:
+            if is_vlm:
+                print(f"[ChatEngine] Failed loading with mlx_vlm: {e}. Retrying with mlx_lm...")
+                from mlx_lm import load
+                self.model, self.processor = load(model_path)
+            else:
+                raise e
         self.model_path = model_path
         self.model_loaded = True
 
@@ -327,28 +363,52 @@ class ChatEngine:
         except ImportError:
             pass
 
-        from mlx_vlm.generate import stream_generate
-        from mlx_vlm.prompt_utils import apply_chat_template
+        is_vlm_model = hasattr(self.processor, "image_processor")
+
+        if is_vlm_model:
+            from mlx_vlm.generate import stream_generate
+            from mlx_vlm.prompt_utils import apply_chat_template
+        else:
+            from mlx_lm import stream_generate
+            from mlx_lm.sample_utils import make_sampler, make_logits_processors
 
         try:
-            formatted_prompt = apply_chat_template(
-                self.processor,
-                self.model.config,
-                messages,
-                num_images=0,
-                num_audios=0
-            )
+            if is_vlm_model:
+                formatted_prompt = apply_chat_template(
+                    self.processor,
+                    self.model.config,
+                    messages,
+                    num_images=0,
+                    num_audios=0
+                )
+            else:
+                formatted_prompt = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-            generator = stream_generate(
-                self.model,
-                self.processor,
-                prompt=formatted_prompt,
-                temp=temp,
-                max_tokens=1000,
-                repetition_penalty=repetition_penalty,
-                repetition_context_size=100,
-                seed=42,
-            )
+            if is_vlm_model:
+                generator = stream_generate(
+                    self.model,
+                    self.processor,
+                    prompt=formatted_prompt,
+                    temp=temp,
+                    max_tokens=1000,
+                    repetition_penalty=repetition_penalty,
+                    repetition_context_size=100,
+                    seed=42,
+                )
+            else:
+                sampler = make_sampler(temp=temp)
+                logits_processors = make_logits_processors(
+                    repetition_penalty=repetition_penalty,
+                    repetition_context_size=100
+                )
+                generator = stream_generate(
+                    self.model,
+                    self.processor,
+                    prompt=formatted_prompt,
+                    max_tokens=1000,
+                    sampler=sampler,
+                    logits_processors=logits_processors,
+                )
 
             # 3. 토큰 실시간 전송
             for response in generator:

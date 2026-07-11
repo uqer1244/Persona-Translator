@@ -54,8 +54,44 @@ def load_model_cached(model_path: str):
                     except Exception as ex:
                         print(f"[PATCH WARNING] Failed to create video preprocessor config: {ex}")
 
-        from mlx_vlm import load
-        model, processor = load(model_path)
+        # Read config.json to decide mlx_lm vs mlx_vlm loading
+        is_vlm = False
+        if os.path.isdir(model_path):
+            config_json_path = os.path.join(model_path, "config.json")
+            if os.path.exists(config_json_path):
+                try:
+                    with open(config_json_path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                    
+                    model_type = cfg.get("model_type", "").lower()
+                    archs = [a.lower() for a in cfg.get("architectures", [])]
+                    is_qwen = "qwen" in model_type or any("qwen" in a for a in archs) or "qwen" in model_path.lower()
+                    
+                    if is_qwen:
+                        is_vlm = False
+                    elif cfg.get("language_model_only", False):
+                        is_vlm = False
+                    elif "vision_config" in cfg or "vision_tower" in cfg:
+                        is_vlm = True
+                    elif any("ConditionalGeneration" in a for a in cfg.get("architectures", [])):
+                        is_vlm = True
+                except Exception:
+                    pass
+
+        try:
+            if is_vlm:
+                from mlx_vlm import load
+                model, processor = load(model_path)
+            else:
+                from mlx_lm import load
+                model, processor = load(model_path)
+        except Exception as e:
+            if is_vlm:
+                print(f"[MODEL LOAD] Failed loading with mlx_vlm: {e}. Retrying with mlx_lm...")
+                from mlx_lm import load
+                model, processor = load(model_path)
+            else:
+                raise e
 
         # Override chat template for Gemma4/Gemma3 models if needed
         is_gemma4 = False

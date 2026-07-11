@@ -23,6 +23,10 @@ def render_sidebar() -> dict:
             index=engine_options.index(st.session_state.inference_engine),
             disabled=is_running
         )
+        if "inference_engine" in st.session_state and selected_engine != st.session_state.inference_engine:
+            unload_model()
+            st.session_state.inference_engine = selected_engine
+            st.rerun()
         st.session_state.inference_engine = selected_engine
 
         if selected_engine == "mlx-vlm (로컬 실행)":

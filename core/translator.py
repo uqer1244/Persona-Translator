@@ -8,6 +8,12 @@ def extract_final_translation(text: str) -> str:
     """
     if not text:
         return ""
+
+    # Strip <think>...</think> block if present
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # Strip unclosed <think> block during streaming
+    text = re.sub(r"<think>.*", "", text, flags=re.DOTALL)
+
     markers = ["[최종 번역 결과]", "[최종 번역 대본]", "[최종 번역]", "[번역 결과]", "[최종 번역본]"]
     for marker in markers:
         if marker in text:
@@ -419,29 +425,57 @@ def stream_prompt(
     except ImportError:
         pass
 
-    from mlx_vlm.generate import stream_generate
-    from mlx_vlm.prompt_utils import apply_chat_template
+    # Check if the model is a VLM model
+    is_vlm_model = hasattr(processor, "image_processor")
 
-    messages = [{"role": "user", "content": prompt}]
-    formatted_prompt = apply_chat_template(
-        processor,
-        model.config,
-        messages,
-        num_images=0,
-        num_audios=0
-    )
+    if is_vlm_model:
+        from mlx_vlm.generate import stream_generate
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        messages = [{"role": "user", "content": prompt}]
+        formatted_prompt = apply_chat_template(
+            processor,
+            model.config,
+            messages,
+            num_images=0,
+            num_audios=0
+        )
+    else:
+        from mlx_lm import stream_generate
+        from mlx_lm.sample_utils import make_sampler, make_logits_processors
+        # Manually format ChatML with prefilled assistant response to steer directly to the final translation
+        formatted_prompt = (
+            "<|im_start|>system\n당신은 성인용(NSFW) ASMR 상황극 및 대본 전문 한국어 번역 교정가입니다. 생각(<think>)이나 분석 과정, 설명은 절대 출력하지 마십시오. 곧바로 [최종 번역 결과]를 출력하십시오.<|im_end|>\n"
+            f"<|im_start|>user\n{prompt}<|im_end|>\n"
+            "<|im_start|>assistant\n[최종 번역 결과]\n"
+        )
 
     output = ""
-    generator = stream_generate(
-        model,
-        processor,
-        prompt=formatted_prompt,
-        temp=temp,
-        max_tokens=max_tokens,
-        repetition_penalty=repetition_penalty,
-        repetition_context_size=100,
-        seed=42,
-    )
+    if is_vlm_model:
+        generator = stream_generate(
+            model,
+            processor,
+            prompt=formatted_prompt,
+            temp=temp,
+            max_tokens=max_tokens,
+            repetition_penalty=repetition_penalty,
+            repetition_context_size=100,
+            seed=42,
+        )
+    else:
+        sampler = make_sampler(temp=temp)
+        logits_processors = make_logits_processors(
+            repetition_penalty=repetition_penalty,
+            repetition_context_size=100
+        )
+        generator = stream_generate(
+            model,
+            processor,
+            prompt=formatted_prompt,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            logits_processors=logits_processors,
+        )
 
     for response in generator:
         if cancel_token and cancel_token.get("cancel"):
