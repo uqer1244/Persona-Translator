@@ -66,11 +66,12 @@ def render_tab_refine():
         st.divider()
         
         # 2. 프로젝트 백업 폴더에 즉시 저장
-        project_dir = get_backup_dir(st.session_state.file_name)
-        backup_save_path = os.path.join(project_dir, download_name)
+        backup_save_path = os.path.join(get_backup_dir(st.session_state.file_name), download_name)
         
         if st.button("프로젝트 백업 폴더에 즉시 저장", width="stretch", disabled=not has_result):
             try:
+                project_dir = get_backup_dir(st.session_state.file_name, create=True)
+                backup_save_path = os.path.join(project_dir, download_name)
                 with open(backup_save_path, "w", encoding="utf-8") as f:
                     f.write(st.session_state.translated_script)
                 st.success(f"프로젝트 폴더에 저장되었습니다!\n\n저장 경로: `{backup_save_path}`")

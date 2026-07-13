@@ -16,6 +16,9 @@ def extract_rj_code(text: str) -> str | None:
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 
+DLsite_WORK_CATEGORIES = ("doujin", "books", "pro", "maniax", "girls", "bl", "trans", "serial")
+DLsite_IMAGE_EXTENSIONS = ("jpg", "webp")
+
 
 def safe_project_name(file_name: str) -> str:
     # 1. First check if file_name contains RJ code (highly preferred for background threads)
@@ -52,14 +55,15 @@ def safe_project_name(file_name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]", "_", base_name)
 
 
-def get_backup_dir(file_name: str) -> str:
+def get_backup_dir(file_name: str, create: bool = False) -> str:
     proj_name = safe_project_name(file_name)
     project_dir = os.path.join(BACKUP_ROOT, proj_name)
-    os.makedirs(project_dir, exist_ok=True)
+    if create:
+        os.makedirs(project_dir, exist_ok=True)
     
     # 마이그레이션 로직: 기존에 DLdata/RJXXXXXX 내부에 저장되어 있던 메타데이터가 있으면 복사해 옵니다.
     old_dir = os.path.join(os.path.abspath("./DLdata"), proj_name)
-    if os.path.exists(old_dir) and os.path.abspath(old_dir) != os.path.abspath(project_dir):
+    if create and os.path.exists(old_dir) and os.path.abspath(old_dir) != os.path.abspath(project_dir):
         import shutil
         # 주요 프로젝트 설정 복사
         for f in ["progress.json", "persona.json", "chats.json", "thumbnail.jpg", "thumbnail.png", "thumbnail.webp", "scenario.txt"]:
@@ -92,47 +96,91 @@ def get_backup_dir(file_name: str) -> str:
     return project_dir
 
 
+def _dlsite_folder_codes(rj_num: int, padding: int) -> list[str]:
+    folder_nums = [
+        ((rj_num + 999) // 1000) * 1000,
+        (rj_num // 1000) * 1000,
+    ]
+
+    folder_codes = []
+    seen = set()
+    for folder_num in folder_nums:
+        if folder_num <= 0:
+            continue
+        folder_code = f"RJ{folder_num:0{padding}d}"
+        if folder_code not in seen:
+            seen.add(folder_code)
+            folder_codes.append(folder_code)
+    return folder_codes
+
+
+def _dlsite_thumbnail_urls(rj_code: str) -> list[str]:
+    match = re.search(r"RJ(\d+)", rj_code, re.IGNORECASE)
+    if not match:
+        return []
+
+    rj_num_str = match.group(1)
+    normalized_rj = f"RJ{rj_num_str}"
+    rj_num = int(rj_num_str)
+    folder_codes = _dlsite_folder_codes(rj_num, len(rj_num_str))
+
+    urls = []
+    seen = set()
+
+    def add_url(url: str) -> None:
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+
+    for category in DLsite_WORK_CATEGORIES:
+        for folder_code in folder_codes:
+            for ext in DLsite_IMAGE_EXTENSIONS:
+                add_url(
+                    f"https://img.dlsite.jp/modpub/images2/work/{category}/{folder_code}/{normalized_rj}_img_main.{ext}"
+                )
+
+    prefix = normalized_rj[:5]
+    for ext in DLsite_IMAGE_EXTENSIONS:
+        add_url(f"https://img.dlsite.jp/modpub/images2/work/serial/{prefix}/{normalized_rj}_img_main.{ext}")
+
+    return urls
+
+
 def download_dlsite_thumbnail(rj_code: str, target_dir: str) -> str | None:
     """
     DLsite에서 주어진 RJ 코드에 해당하는 썸네일을 다운로드하여 target_dir에 저장합니다.
     """
-    match = re.search(r'RJ(\d+)', rj_code, re.IGNORECASE)
+    urls = _dlsite_thumbnail_urls(rj_code)
+    
+    # Extract RJ digits for api.asmr-200.com fallback
+    match = re.search(r"RJ(\d+)", rj_code, re.IGNORECASE)
     if not match:
+        match = re.search(r"(\d+)", rj_code)
+    if match:
+        rj_num = match.group(1)
+        urls.append(f"https://api.asmr-200.com/api/cover/{rj_num}.jpg?type=main")
+
+    if not urls:
         return None
-    
-    rj_num_str = match.group(1)
-    rj_num = int(rj_num_str)
-    
-    import math
+
     import requests
+    from urllib.parse import urlparse
     headers = {"User-Agent": "Mozilla/5.0"}
-    
-    urls = []
-    
-    # 1. 일반 동인지/오디오북 등 경로 (doujin 등)
-    folder_num = math.ceil(rj_num / 1000) * 1000
-    padding = len(rj_num_str)
-    folder_code = f"RJ{folder_num:0{padding}d}"
-    
-    subdirs = ["doujin", "books", "pro", "maniax", "girls", "bl", "trans", "serial"]
-    for subdir in subdirs:
-        urls.append(f"https://img.dlsite.jp/modpub/images2/work/{subdir}/{folder_code}/{rj_code}_img_main.jpg")
-        urls.append(f"https://img.dlsite.jp/modpub/images2/work/{subdir}/{folder_code}/{rj_code}_img_main.webp")
-        
-    # 2. 신형 8자리 시리얼 번호 매핑 경로
-    prefix = rj_code[:5]
-    urls.append(f"https://img.dlsite.jp/modpub/images2/work/serial/{prefix}/{rj_code}_img_main.jpg")
-    urls.append(f"https://img.dlsite.jp/modpub/images2/work/serial/{prefix}/{rj_code}_img_main.webp")
-    
+
+    os.makedirs(target_dir, exist_ok=True)
     for url in urls:
         try:
             res = requests.get(url, timeout=5, headers=headers)
-            if res.status_code == 200:
-                ext = ".webp" if url.endswith(".webp") else ".jpg"
-                target_path = os.path.join(target_dir, f"thumbnail{ext}")
-                with open(target_path, "wb") as f:
-                    f.write(res.content)
-                return target_path
+            content_type = res.headers.get("Content-Type", "")
+            if res.status_code != 200 or not content_type.lower().startswith("image/"):
+                continue
+
+            parsed_path = urlparse(url).path
+            ext = os.path.splitext(parsed_path)[1].lower()
+            target_path = os.path.join(target_dir, f"thumbnail{ext}")
+            with open(target_path, "wb") as f:
+                f.write(res.content)
+            return target_path
         except Exception:
             pass
             
@@ -143,8 +191,12 @@ def get_backup_path(file_name: str) -> str:
     return os.path.join(get_backup_dir(file_name), "progress.json")
 
 
-def save_progress(file_name: str, original_chunks: list[str], translated_chunks: list[str]) -> str:
-    backup_path = get_backup_path(file_name)
+def get_writable_backup_path(file_name: str) -> str:
+    return os.path.join(get_backup_dir(file_name, create=True), "progress.json")
+
+
+def save_progress(file_name: str, original_chunks: list[str], translated_chunks: list[str], original_script: str = None) -> str:
+    backup_path = get_writable_backup_path(file_name)
     data = {
         "file_name": file_name,
         "original_chunks": original_chunks,
@@ -154,15 +206,23 @@ def save_progress(file_name: str, original_chunks: list[str], translated_chunks:
         json.dump(data, f, ensure_ascii=False, indent=2)
         
     # 원본 대본 전체를 scenario.txt로 함께 자동 저장하여 원클릭 복원에 사용합니다.
-    try:
-        import streamlit as st
-        if "original_script" in st.session_state and st.session_state.original_script:
-            proj_dir = get_backup_dir(file_name)
+    if not original_script:
+        try:
+            import streamlit as st
+            # StopException은 BaseException을 상속받으므로 안전하게 캐칭
+            if "original_script" in st.session_state:
+                original_script = st.session_state.original_script
+        except BaseException:
+            original_script = None
+
+    if original_script:
+        try:
+            proj_dir = get_backup_dir(file_name, create=True)
             scenario_path = os.path.join(proj_dir, "scenario.txt")
             with open(scenario_path, "w", encoding="utf-8") as sf:
-                sf.write(st.session_state.original_script)
-    except Exception:
-        pass
+                sf.write(original_script)
+        except BaseException:
+            pass
         
     return backup_path
 
@@ -212,7 +272,7 @@ def save_image_note(image_path: str, note: str) -> str:
 
 
 def get_summary_dir(file_name: str) -> str:
-    summary_dir = os.path.join(get_backup_dir(file_name), "summaries")
+    summary_dir = os.path.join(get_backup_dir(file_name, create=True), "summaries")
     os.makedirs(summary_dir, exist_ok=True)
     return summary_dir
 
@@ -254,8 +314,12 @@ def get_persona_backup_path(file_name: str) -> str:
     return os.path.join(get_backup_dir(file_name), "persona.json")
 
 
+def get_writable_persona_backup_path(file_name: str) -> str:
+    return os.path.join(get_backup_dir(file_name, create=True), "persona.json")
+
+
 def save_persona_backup(file_name: str, persona: dict, glossary: list, script_summary: dict = None):
-    path = get_persona_backup_path(file_name)
+    path = get_writable_persona_backup_path(file_name)
     existing_data = {}
     if os.path.exists(path):
         try:

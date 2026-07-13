@@ -59,7 +59,7 @@ def render_tab_script():
 
     # 소개 이미지 저장 및 세션 스테이트 반영
     if uploaded_images:
-        project_dir = get_backup_dir(st.session_state.file_name)
+        project_dir = get_backup_dir(st.session_state.file_name, create=True)
         images_dir = os.path.join(project_dir, "images")
         os.makedirs(images_dir, exist_ok=True)
 
@@ -183,7 +183,7 @@ def render_tab_script():
             
             # Download thumbnail
             if st.session_state.rj_code:
-                project_dir = get_backup_dir(st.session_state.file_name)
+                project_dir = get_backup_dir(st.session_state.file_name, create=True)
                 from core.progress_store import download_dlsite_thumbnail
                 download_dlsite_thumbnail(st.session_state.rj_code, project_dir)
 

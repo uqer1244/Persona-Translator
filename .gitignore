@@ -50,3 +50,5 @@ master_glossary.json
 # Test scripts
 test_openrouter.py
 .test_*
+
+/scratch

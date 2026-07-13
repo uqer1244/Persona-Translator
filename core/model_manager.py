@@ -128,6 +128,7 @@ def unload_model():
     """
     st.session_state.model = None
     st.session_state.processor = None
+    st.session_state.model_runtime = None
     st.session_state.model_loaded = False
     try:
         load_model_cached.clear()

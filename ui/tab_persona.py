@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import pandas as pd
+from core.model_runtime import model_supports_vision
 from core.utils import EXECUTOR, extract_script_structure
 from core.progress_store import (
     load_master_glossary,
@@ -281,7 +282,7 @@ def render_tab_persona():
     st.subheader("소개 이미지 분석 결과")
     st.caption("업로드한 이미지를 VLM이 어떻게 이해했는지 확인합니다. 분석 결과는 temp_backups의 이미지 파일 옆에 저장됩니다.")
 
-    if st.session_state.model_loaded and not hasattr(st.session_state.processor, "image_processor"):
+    if st.session_state.model_loaded and not model_supports_vision(st.session_state.model, st.session_state.processor):
         st.warning("⚠️ 현재 로드된 모델은 텍스트 전용 모델(또는 비전 가중치가 없는 모델)입니다. 이미지 분석 기능은 작동하지 않으며 대본과 메타데이터만 분석에 사용됩니다.")
 
     if st.session_state.temp_image_paths:

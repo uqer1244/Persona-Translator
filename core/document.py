@@ -1,6 +1,10 @@
 import re
+import logging
 from pypdf import PdfReader
 from pypdf.generic import NumberObject
+
+# Suppress annoying pdfminer font descriptor warning logs
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
 # Monkey patch pypdf to allow parsing PDFs with long number/float sequences (exceeding default 64 chars limit)
 NumberObject._LENGTH_LIMIT = 10240

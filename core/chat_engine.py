@@ -4,6 +4,49 @@ import re
 from core.chat_utils import build_rag_corpus, BM25Okapi, clean_and_tokenize
 from core.progress_store import BACKUP_ROOT
 
+
+class PromptCacheManager:
+    """
+    MLX KVCache와 토큰 히스토리를 정렬하여 중복 인코딩을 방지하는 캐시 관리 클래스
+    """
+    def __init__(self, model):
+        from mlx_lm.utils import make_prompt_cache
+        self.prompt_cache = make_prompt_cache(model)
+        self.cached_tokens = []
+
+    def get_incremental_tokens(self, formatted_prompt: str, processor) -> list[int]:
+        if hasattr(processor, "tokenizer"):
+            tokenizer = processor.tokenizer
+        else:
+            tokenizer = processor
+            
+        all_tokens = tokenizer.encode(formatted_prompt)
+        
+        # 이전 캐싱된 토큰들과 매칭되는 공통 접두사 확인
+        common_len = 0
+        for i in range(min(len(self.cached_tokens), len(all_tokens))):
+            if self.cached_tokens[i] == all_tokens[i]:
+                common_len += 1
+            else:
+                break
+                
+        # 매칭 일치도가 너무 낮으면(예: 대화방 리셋 등) 캐시 리셋
+        if common_len < len(self.cached_tokens) * 0.9:
+            self.prompt_cache.reset()
+            self.cached_tokens = []
+            common_len = 0
+            
+        # 역전 현상이 생겨도 리셋
+        if common_len < len(self.cached_tokens):
+            self.prompt_cache.reset()
+            self.cached_tokens = all_tokens
+            return all_tokens
+            
+        new_tokens = all_tokens[common_len:]
+        self.cached_tokens.extend(new_tokens)
+        return new_tokens
+
+
 class ChatEngine:
     """
     RAG 검색, 시스템 프롬프트 조립 및 mlx_vlm을 통한 실시간 대화 추론을 제어하는 엔진 클래스
@@ -18,6 +61,7 @@ class ChatEngine:
         self.processor = None
         self.model_path = None
         self.model_loaded = False
+        self.prompt_cache = None
         
         # 서사 제어 및 인지 고도화용 신규 상태 필드
         self.script_summary = {}
@@ -89,6 +133,7 @@ class ChatEngine:
         self.model = None
         self.processor = None
         self.model_loaded = False
+        self.prompt_cache = None
         import mlx.core as mx
         import gc
         mx.clear_cache()
@@ -396,6 +441,13 @@ class ChatEngine:
                     seed=42,
                 )
             else:
+                if self.prompt_cache is None:
+                    self.prompt_cache = PromptCacheManager(self.model)
+
+                import mlx.core as mx
+                incremental_tokens = self.prompt_cache.get_incremental_tokens(formatted_prompt, self.processor)
+                incremental_array = mx.array(incremental_tokens)
+
                 sampler = make_sampler(temp=temp)
                 logits_processors = make_logits_processors(
                     repetition_penalty=repetition_penalty,
@@ -404,15 +456,19 @@ class ChatEngine:
                 generator = stream_generate(
                     self.model,
                     self.processor,
-                    prompt=formatted_prompt,
+                    prompt=incremental_array,
                     max_tokens=1000,
                     sampler=sampler,
                     logits_processors=logits_processors,
+                    prompt_cache=self.prompt_cache.prompt_cache,
                 )
 
             # 3. 토큰 실시간 전송
             for response in generator:
                 yield json.dumps({"event": "token", "data": response.text}, ensure_ascii=False) + "\n"
+                if self.prompt_cache is not None and not is_vlm_model:
+                    if hasattr(response, "token"):
+                        self.prompt_cache.cached_tokens.append(response.token)
 
         except Exception as e:
             yield json.dumps({"event": "error", "data": str(e)}, ensure_ascii=False) + "\n"

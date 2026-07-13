@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 from core.utils import load_model_cached, unload_model, sync_chunks
+from core.model_runtime import BACKEND_SPECS, wrap_model_runtime
 
 MODELS_DIR = os.path.abspath("./models")
 
@@ -78,6 +79,12 @@ def render_sidebar() -> dict:
                                 model, processor = load_model_cached(model_path)
                                 st.session_state.model = model
                                 st.session_state.processor = processor
+                                st.session_state.model_runtime = wrap_model_runtime(
+                                    model,
+                                    processor,
+                                    backend_key="mlx",
+                                    model_id=model_path,
+                                )
                                 st.session_state.model_loaded = True
                             st.success("모델 로드 성공!")
                             st.rerun()
@@ -128,6 +135,13 @@ def render_sidebar() -> dict:
                 or_model_name = selected_or_option
                 
             st.session_state.openrouter_model = or_model_name
+            openrouter_supports_vision = st.checkbox(
+                "선택한 API 모델 이미지 분석 사용",
+                value=st.session_state.get("openrouter_supports_vision", False),
+                help="OpenRouter 모델이 vision 입력을 지원할 때만 켜세요. 꺼져 있으면 소개 이미지는 건너뛰고 텍스트 대본만 분석합니다.",
+                disabled=is_running,
+            )
+            st.session_state.openrouter_supports_vision = openrouter_supports_vision
 
             # OpenRouter Connection button
             if not st.session_state.model_loaded:
@@ -140,8 +154,16 @@ def render_sidebar() -> dict:
                             with st.spinner("오픈라우터 API 활성화 중..."):
                                 from core.openrouter import OpenRouterClient
                                 client = OpenRouterClient(api_key=openrouter_key, model_name=or_model_name)
+                                client.supports_vision = openrouter_supports_vision
                                 st.session_state.model = client
                                 st.session_state.processor = None
+                                st.session_state.model_runtime = wrap_model_runtime(
+                                    client,
+                                    None,
+                                    backend_key="openrouter",
+                                    model_id=or_model_name,
+                                    supports_vision=openrouter_supports_vision,
+                                )
                                 st.session_state.model_loaded = True
                             st.success("오픈라우터 API 연결 완료!")
                             st.rerun()
@@ -154,6 +176,14 @@ def render_sidebar() -> dict:
                     unload_model()
                     st.rerun()
         st.divider()
+        with st.expander("모델 런타임/가속기 어댑터", expanded=False):
+            st.caption("현재는 MLX와 OpenRouter만 실제 실행됩니다. 나머지는 교체 가능한 어댑터 슬롯입니다.")
+            for spec in BACKEND_SPECS.values():
+                state = "사용 가능" if spec.available else "준비 슬롯"
+                vision = "VLM 가능" if spec.supports_vision else "LM 전용"
+                st.markdown(f"- **{spec.label}**: {state}, {vision}")
+                if spec.note:
+                    st.caption(spec.note)
         
         # Translation parameters
         st.header("하이퍼파라미터")

@@ -4,152 +4,15 @@ import re
 import json
 import shutil
 import hashlib
-from PIL import Image, ImageFilter
-import io
 
 from core.utils import get_backup_dir, list_saved_images, decode_text, natural_sort_key
 from core.progress_store import get_image_note_path, load_image_note, BACKUP_ROOT
-
-# NSFW keywords list for auto-detection (Korean, English, Japanese)
-NSFW_KEYWORDS = {
-    # English
-    "nsfw", "r-18", "r18", "r-15", "r15", "adult", "18+", "18plus", "underage_censored",
-    # Korean
-    "19금", "18금", "성인용", "성인물", "야한", "섹스", "성관계", "정액", "사정", "질외", "질내", 
-    "음부", "자지", "보지", "클리", "유두", "기승위", "정상위", "후배위", "네토라레", "ntr", 
-    "애무", "펠라", "쿠퍼액", "성기", "신음", "교성",
-    # Japanese
-    "喘ぎ", "絶頂", "中出し", "本番", "セックス", "フェラ", "オナニー", "クンニ", 
-    "乳首", "陰部", "アナル", "処女", "射精", "勃起"
-}
-
-def check_is_nsfw(name: str, path: str) -> bool:
-    """Heuristic check to determine if a project/work is NSFW."""
-    name_lower = name.lower()
-    
-    # 1. Check folder/project name
-    for kw in NSFW_KEYWORDS:
-        if kw in name_lower:
-            return True
-            
-    # 2. Check persona.json contents if available
-    persona_path = os.path.join(path, "persona.json")
-    if os.path.exists(persona_path):
-        try:
-            with open(persona_path, "r", encoding="utf-8") as f:
-                pdata = json.load(f)
-                
-                # Check persona fields
-                persona = pdata.get("persona", {})
-                for k, v in persona.items():
-                    if isinstance(v, str):
-                        v_lower = v.lower()
-                        for kw in NSFW_KEYWORDS:
-                            if kw in v_lower:
-                                return True
-                    elif isinstance(v, list):
-                        for item in v:
-                            if isinstance(item, str):
-                                item_lower = item.lower()
-                                for kw in NSFW_KEYWORDS:
-                                    if kw in item_lower:
-                                        return True
-                                        
-                # Check glossary_data
-                for g in pdata.get("glossary_data", []):
-                    src = str(g.get("원어 (Source)", "")).lower()
-                    tgt = str(g.get("번역어 (Target)", "")).lower()
-                    ctx = str(g.get("설명/뉘앙스 (Context)", "")).lower()
-                    for kw in NSFW_KEYWORDS:
-                        if kw in src or kw in tgt or kw in ctx:
-                            return True
-        except Exception:
-            pass
-            
-    # 3. Check scenario.txt (first 2000 chars)
-    scenario_path = os.path.join(path, "scenario.txt")
-    if os.path.exists(scenario_path):
-        try:
-            with open(scenario_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read(2000).lower()
-                for kw in NSFW_KEYWORDS:
-                    if kw in content:
-                        return True
-        except Exception:
-            pass
-            
-    return False
-
-def get_nsfw_status(name: str, path: str) -> bool:
-    """Gets NSFW status, respecting manual overrides first."""
-    if os.path.exists(os.path.join(path, ".nsfw")):
-        return True
-    if os.path.exists(os.path.join(path, ".sfw")):
-        return False
-    return check_is_nsfw(name, path)
-
-def set_nsfw_status(path: str, is_nsfw: bool):
-    """Sets manual NSFW status by creating override files."""
-    nsfw_file = os.path.join(path, ".nsfw")
-    sfw_file = os.path.join(path, ".sfw")
-    if is_nsfw:
-        if os.path.exists(sfw_file):
-            try: os.remove(sfw_file)
-            except Exception: pass
-        with open(nsfw_file, "w", encoding="utf-8") as f:
-            f.write("1")
-    else:
-        if os.path.exists(nsfw_file):
-            try: os.remove(nsfw_file)
-            except Exception: pass
-        with open(sfw_file, "w", encoding="utf-8") as f:
-            f.write("1")
-
-@st.cache_data(show_spinner=False)
-def get_display_image_cached(image_path: str, blur: bool, blur_strength: int = 20) -> bytes:
-    """Loads, resizes to uniform scale preserving aspect ratio, and optionally blurs the cover image using PIL, caching the result."""
-    try:
-        img = Image.open(image_path)
-        img = img.convert("RGB")
-        # Resize preserving aspect ratio (target width = 300)
-        w, h = img.size
-        new_w = 300
-        new_h = int(h * (300 / w))
-        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        if blur:
-            img = img.filter(ImageFilter.GaussianBlur(radius=blur_strength))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        return buf.getvalue()
-    except Exception:
-        try:
-            with open(image_path, "rb") as f:
-                return f.read()
-        except Exception:
-            return b""
-
-def get_dir_tree(startpath: str) -> str:
-    tree = []
-    for root, dirs, files in os.walk(startpath):
-        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('translation_backup', 'temp_backups', 'images')]
-        level = root.replace(startpath, '').count(os.sep)
-        indent = '  ' * level
-        folder_name = os.path.basename(root)
-        if folder_name:
-            tree.append(f"{indent}📁 {folder_name}/")
-        subindent = '  ' * (level + 1)
-        for f in sorted(files):
-            if not f.startswith('.'):
-                ext = os.path.splitext(f)[1].lower()
-                icon = "📄"
-                if ext in {".txt", ".srt", ".pdf"}:
-                    icon = "📝"
-                elif ext in {".png", ".jpg", ".jpeg", ".webp"}:
-                    icon = "🖼️"
-                elif ext in {".mp3", ".wav", ".flac", ".m4a"}:
-                    icon = "🎵"
-                tree.append(f"{subindent}{icon} {f}")
-    return "\n".join(tree)
+from ui.library_helpers import (
+    get_dir_tree,
+    get_display_image_cached,
+    get_nsfw_status,
+    set_nsfw_status,
+)
 
 def render_tab_library():
     if "library_root_dir" not in st.session_state:
@@ -175,18 +38,16 @@ def render_tab_library():
         with col_nsfw_hide:
             nsfw_hide = st.checkbox("NSFW 숨기기", value=False, help="NSFW로 분류된 작품들을 라이브러리에서 숨깁니다.", key="lib_nsfw_hide_cb")
         with col_nsfw_blur:
-            nsfw_blur = st.checkbox("NSFW 블러처리", value=True, help="NSFW로 분류된 작품들의 썸네일을 흐리게 처리합니다.", key="lib_nsfw_blur_cb")
-            
-        nsfw_blur_strength = 20
-        if nsfw_blur and not nsfw_hide:
             nsfw_blur_strength = st.slider(
-                "블러 강도",
-                min_value=5,
+                "NSFW 블러 강도",
+                min_value=0,
                 max_value=60,
                 value=20,
                 step=5,
+                help="0으로 두면 NSFW 썸네일 블러가 꺼집니다.",
                 key="lib_nsfw_blur_strength_slider"
             )
+        blur_enabled = not nsfw_hide and nsfw_blur_strength > 0
 
     # Sub-tabs for Ongoing Projects vs DLdata Library
     lib_tab1, lib_tab2 = st.tabs(["진행 중인 프로젝트 복원", "신규 작품 가져오기"])
@@ -250,7 +111,7 @@ def render_tab_library():
                     with col:
                         # 1. Cover Image (with blur if needed)
                         if cover_path:
-                            display_img = get_display_image_cached(cover_path, is_nsfw and nsfw_blur, nsfw_blur_strength)
+                            display_img = get_display_image_cached(cover_path, is_nsfw and blur_enabled, nsfw_blur_strength)
                             st.image(display_img, width='stretch')
                         else:
                             st.markdown(
@@ -449,7 +310,7 @@ def render_tab_library():
                     with col:
                         # 1. Cover Image (with blur if needed)
                         if cover_path:
-                            display_img = get_display_image_cached(cover_path, is_nsfw and nsfw_blur, nsfw_blur_strength)
+                            display_img = get_display_image_cached(cover_path, is_nsfw and blur_enabled, nsfw_blur_strength)
                             st.image(display_img, width='stretch')
                         else:
                             st.markdown(
@@ -568,12 +429,32 @@ def render_tab_library():
                 else:
                     st.success(f"스캔 완료: 대본 파일 {len(scripts_found)}개, 이미지 파일 {len(images_found)}개 감지됨")
 
+                    # Initialize / sanitize multiselect values in session state to prevent warnings
+                    if "last_scanned_folder" not in st.session_state:
+                        st.session_state.last_scanned_folder = ""
+
+                    if st.session_state.last_scanned_folder != local_path:
+                        st.session_state.last_scanned_folder = local_path
+                        if "lib_select_scripts" in st.session_state:
+                            del st.session_state["lib_select_scripts"]
+                        if "lib_select_images" in st.session_state:
+                            del st.session_state["lib_select_images"]
+
+                    if "lib_select_scripts" not in st.session_state:
+                        st.session_state["lib_select_scripts"] = scripts_found
+                    else:
+                        st.session_state["lib_select_scripts"] = [x for x in st.session_state["lib_select_scripts"] if x in scripts_found]
+
+                    if "lib_select_images" not in st.session_state:
+                        st.session_state["lib_select_images"] = images_found[:4] if len(images_found) > 4 else images_found
+                    else:
+                        st.session_state["lib_select_images"] = [x for x in st.session_state["lib_select_images"] if x in images_found]
+
                     col_l_s, col_l_i = st.columns(2)
                     with col_l_s:
                         selected_local_scripts = st.multiselect(
                             "가져올 대본 파일 선택",
                             options=scripts_found,
-                            default=scripts_found,
                             format_func=lambda x: os.path.relpath(x, local_path),
                             key="lib_select_scripts"
                         )
@@ -581,7 +462,6 @@ def render_tab_library():
                         selected_local_images = st.multiselect(
                             "가져올 소개 이미지 선택",
                             options=images_found,
-                            default=images_found[:4] if len(images_found) > 4 else images_found,
                             format_func=lambda x: os.path.relpath(x, local_path),
                             key="lib_select_images"
                         )
@@ -700,7 +580,7 @@ def render_tab_library():
                         if rj:
                             st.session_state.rj_code = rj
 
-                        project_dir = get_backup_dir(st.session_state.file_name)
+                        project_dir = get_backup_dir(st.session_state.file_name, create=True)
                         images_dir = os.path.join(project_dir, "images")
                         os.makedirs(images_dir, exist_ok=True)
 
