@@ -32,7 +32,7 @@ CHUNK_ANALYSIS_SCHEMA = """{
 
 CARD_SYNTHESIS_SCHEMA = """{
   "name": "캐릭터 이름. 불명확하면 프로젝트명 기반",
-  "description": "마크다운 형식의 캐릭터 설명. 성격, 말투, 작품에서 청자와 겪은 주요 사건, 관계 변화, 연기 규칙 포함",
+  "description": "마크다운 형식의 캐릭터 설명. 성격, 말투, 특징, 연기 규칙 등 캐릭터 본연의 속성과 정보만 기입하세요 (대본 사건 타임라인이나 기억 목록 등 서사 정보는 제외).",
   "personality": "짧은 성격 키워드 묶음",
   "scenario": "작품 이후 시점의 봇카드 시나리오. 화자와 청자는 대본 속 사건을 함께 겪은 관계이며, 그 기억을 대화에서 자연스럽게 회상할 수 있음",
   "first_mes": "작품 이후 시점의 첫 메시지. 원작 첫 대사 복붙이 아니라, 대본 사건을 겪은 뒤 다시 만난 상황. 지문은 *지문* 형식",
@@ -44,7 +44,8 @@ CARD_SYNTHESIS_SCHEMA = """{
       "order": 1,
       "event": "작품에서 실제로 일어난 주요 사건",
       "relationship_shift": "그 사건 전후 관계 변화",
-      "memory_for_chat": "대화 중 화자가 회상할 수 있는 방식"
+      "memory_for_chat": "대화 중 화자가 회상할 수 있는 방식",
+      "lore_keys": ["이 사건을 연상/트리거할 수 있는 핵심 키워드/명사 리스트 (예: '바다', '고백', '비', '초콜릿')"]
     }
   ],
   "relationship_arc": "작품 시작부터 종료 후 현재 시점까지 화자와 청자 관계가 어떻게 변했는지",
@@ -57,49 +58,88 @@ CARD_SYNTHESIS_SCHEMA = """{
 }"""
 
 
-def build_chunk_analysis_prompt(
-    json_rules: str,
+def build_chunk_compression_prompt(
     chunk_text: str,
     chunk_index: int,
     total_chunks: int,
+) -> str:
+    return f"""
+동인음성 ASMR 대본을 봇카드로 합성하기 위해, 주어진 구간을 150~250자 내외로 초압축 요약하세요.
+전체 대본 중 {chunk_index + 1}/{total_chunks}번째 구간입니다.
+
+[지침]
+- 무의미한 지문(BGM, SE 등)이나 호흡, 신음 소리 등은 전부 배제하세요.
+- 오직 "누가 무엇을 했고, 어떤 대화가 오갔으며, 인물 간의 감정/태도/관계가 어떻게 움직였는지" 핵심 사건 위주로만 시간순으로 요약하세요.
+- 다른 부연 설명이나 인사말 없이 오직 요약문 텍스트만 출력하세요.
+
+[대본 구간]
+{chunk_text[:5000]}
+"""
+
+
+EVENT_MAP_SCHEMA = """{
+  "narrative_progression": [
+    {
+      "chapter_title": "해당 사건/챕터의 명확하고 구체적인 이름 (예: '귀를 파주며 깊어진 대화', '빗소리 속 고백')",
+      "plot_order": 1,
+      "event_details": "이 챕터에서 실제로 일어난 구체적인 행동, 대화, 사건 흐름 요약",
+      "cause": "이 사건이 발생하게 된 인과관계 배경 (어떤 사건이나 감정선에서 이어졌는지)",
+      "emotional_state": "이 시점 화자의 상세한 감정 상태와 청자를 대하는 숨겨진 마음",
+      "relationship_shift": "이 사건 전후로 화자와 청자의 관계 및 친밀도가 어떻게 바뀌었는지",
+      "key_memory": "작품 이후 시점의 대화에서 화자가 떠올려 언급할 만한 핵심 대사 또는 상징적인 행동",
+      "lore_keys": ["이 사건을 자연스럽게 연상하고 소환할 수 있는 구체적인 트리거 단어 리스트 (예: '빗소리', '고백', '귀이개', '포옹')"]
+    }
+  ],
+  "global_relationship_arc": "처음 조우했을 때의 어색함/거리감에서 시작하여, 각 사건을 거쳐 최종적으로 어떤 관계로 축적되고 도달했는지에 대한 유기적인 서사 요약"
+}"""
+
+
+def build_event_map_prompt(
+    json_rules: str,
+    joined_summaries: str,
     metadata_text: str = "",
 ) -> str:
     return f"""
-동인음성 ASMR 대본을 RisuAI 봇카드로 변환하기 위한 청크 분석을 수행하세요.
-전체 대본 중 {chunk_index + 1}/{total_chunks}번째 구간입니다. 이 구간 안에 실제로 드러난 정보만 추출하고, 없는 내용은 추측하지 마세요.
-최종 봇은 작품 이후 시점에서 청자와 대화할 예정입니다. 따라서 이 구간에서 나중에 회상 가능한 사건, 감정 변화, 관계 변화가 있으면 반드시 event_beats와 recallable_memories에 기록하세요.
+아래는 동인음성 대본 전체를 시간순으로 요약한 텍스트 시퀀스 및 작품 설명 메타데이터입니다.
+이 정보를 종합하여, 전체 대본의 서사적 사건 지도(Event Map)와 인과관계를 구조화하여 분석하세요.
+
+[사건/챕터 정리 지침 - 중요]
+1. **논리적 챕터 그룹화**: 요약된 각 구간들을 자잘하게 분할하지 말고, 하나의 큰 흐름(장소 변화, 행동 전환, 대화 주제 전환 등)을 가진 **3~5개의 핵심 서사 챕터**로 묶으세요.
+2. **명확한 인과관계 기술**: 각 사건이 일어난 원인("cause")을 단순 설명이 아닌, 이전 사건(챕터)의 흐름이나 화자의 심리적 변화 등 '원인-결과'의 흐름으로 매끄럽게 정의하세요.
+3. **핵심 기억 포착**: 각 챕터에서 화자의 캐릭터성이나 감정이 강하게 드러난 실제 대사선, 또는 상징적인 액션을 "key_memory"에 구체적으로 담으세요.
+4. **로어북 키워드 추출**: 각 사건의 성격을 대표하면서 사용자가 채팅 중에 언급할 수 있는 고유 키워드들("lore_keys")을 선정하세요. (예: 술주정 사건 -> `["취했어", "맥주", "술김"]`, 무릎베개 사건 -> `["무릎", "베개", "머리카락"]`)
 
 {json_rules}
 
 [출력 JSON]
-{CHUNK_ANALYSIS_SCHEMA}
+{EVENT_MAP_SCHEMA}
 
 [메타데이터]
-{metadata_text[:1200]}
+{metadata_text[:1500]}
 
-[대본 구간]
-{chunk_text[:6000]}
+[대본 요약 시퀀스]
+{joined_summaries}
 """
 
 
 def build_card_synthesis_prompt(
     json_rules: str,
-    analyses: list[dict],
+    event_map: dict,
     persona_data: dict,
     metadata_text: str = "",
 ) -> str:
     persona = persona_data.get("persona", {})
     glossary = persona_data.get("glossary_data", [])
     script_summary = persona_data.get("script_summary", {})
-    compact_analyses = json.dumps(analyses, ensure_ascii=False)[:24000]
 
     return f"""
-아래는 동인음성 대본 전체를 청크별로 분석한 결과입니다.
+아래는 동인음성 대본의 전체 사건 지도(Event & Causal Map)와 기존 페르소나 설정입니다.
 RisuAI/Character Card v3에 넣을 봇카드 필드를 생성하세요.
-중요: 카드에는 대본 전체 이해가 녹아 있어야 하지만, 원문을 길게 복붙하지 말고 핵심 설정/말투/관계/장면만 압축하세요.
+
 중요: 이 봇카드는 작품 도입부를 재현하는 카드가 아니라, 작품 이후 시점에서 청자와 다시 대화하는 캐릭터 카드입니다.
-화자와 청자는 대본 속 사건을 함께 겪은 관계로 설정하세요. first_mes, scenario, mes_example에는 이 공유 기억과 관계 변화가 자연스럽게 반영되어야 합니다.
-대본에 없는 사건은 만들지 말고, 불확실한 내용은 확정하지 마세요.
+화자와 청자는 대본 속 사건들을 함께 겪은 관계로 설정하세요.
+특히 first_mes, scenario, mes_example에는 이 대본 속 공유 기억(Key Memory)과 관계 변화가 자연스럽게 반영되어야 합니다.
+대본에 없는 사건은 절대 창작하지 마세요.
 
 {json_rules}
 
@@ -116,10 +156,10 @@ RisuAI/Character Card v3에 넣을 봇카드 필드를 생성하세요.
 {json.dumps(script_summary, ensure_ascii=False, indent=2)}
 
 [메타데이터]
-{metadata_text[:2000]}
+{metadata_text[:1500]}
 
-[청크별 분석 결과]
-{compact_analyses}
+[대본 사건 및 인과관계 지도 (Event Map)]
+{json.dumps(event_map, ensure_ascii=False, indent=2)}
 """
 
 

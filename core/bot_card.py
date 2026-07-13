@@ -5,12 +5,9 @@ import os
 from core.analyzer import _generate_text, _json_correction_rules, _json_rules, _parse_json_response
 from core.bot_card_prompts import (
     build_card_synthesis_prompt,
-    build_chunk_analysis_prompt,
     fallback_card_fields,
 )
 from core.bot_card_storage import (
-    get_bot_card_cache_dir,
-    load_bot_card,
     load_persona_for_project,
     load_scenario_chunks,
     load_script_chunks_for_project,
@@ -19,13 +16,6 @@ from core.bot_card_storage import (
     select_source_chunks,
 )
 from core.risu_card import export_charx_bytes, make_risu_card
-
-
-BOT_CARD_CHUNK_CACHE_VERSION = 2
-
-
-def _chunk_source_hash(chunk_text: str) -> str:
-    return hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
 
 
 def _safe_parse_json(model, processor, response: str, fallback: dict) -> dict:
@@ -45,87 +35,12 @@ def _safe_parse_json(model, processor, response: str, fallback: dict) -> dict:
             return fallback
 
 
-def analyze_bot_card_chunk(
-    model,
-    processor,
-    file_name: str,
-    chunk_text: str,
-    chunk_index: int,
-    total_chunks: int,
-    metadata_text: str = "",
-) -> dict:
-    cache_dir = get_bot_card_cache_dir(file_name)
-    cache_path = os.path.join(cache_dir, f"chunk_{chunk_index + 1:04d}.json")
-    source_hash = _chunk_source_hash(chunk_text)
-
-    cached = _load_cached_chunk_analysis(cache_path, source_hash)
-    if cached is not None:
-        return cached
-
-    prompt = build_chunk_analysis_prompt(
-        json_rules=_json_rules(model, processor),
-        chunk_text=chunk_text,
-        chunk_index=chunk_index,
-        total_chunks=total_chunks,
-        metadata_text=metadata_text,
-    )
-    fallback = _fallback_chunk_analysis(chunk_text)
-    response = _generate_text(model, processor, prompt, max_tokens=1800, temp=0.15, force_json=True)
-    analysis = _safe_parse_json(model, processor, response, fallback)
-    _save_chunk_analysis(cache_path, chunk_index, source_hash, analysis)
-    return analysis
-
-
-def _load_cached_chunk_analysis(cache_path: str, source_hash: str) -> dict | None:
-    if not os.path.exists(cache_path):
-        return None
-    try:
-        with open(cache_path, "r", encoding="utf-8") as f:
-            cached = json.load(f)
-        if cached.get("source_hash") == source_hash and cached.get("cache_version") == BOT_CARD_CHUNK_CACHE_VERSION:
-            return cached.get("analysis", {})
-    except Exception:
-        return None
-    return None
-
-
-def _save_chunk_analysis(cache_path: str, chunk_index: int, source_hash: str, analysis: dict) -> None:
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "cache_version": BOT_CARD_CHUNK_CACHE_VERSION,
-                "chunk_index": chunk_index,
-                "source_hash": source_hash,
-                "analysis": analysis,
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-
-def _fallback_chunk_analysis(chunk_text: str) -> dict:
-    return {
-        "scene_summary": chunk_text[:300],
-        "scenario_facts": [],
-        "event_beats": [],
-        "character_traits": [],
-        "speech_style": [],
-        "first_message_candidates": [],
-        "dialogue_examples": [],
-        "lore_candidates": [],
-        "relationship_notes": [],
-        "recallable_memories": [],
-        "safety_notes": [],
-    }
-
-
-def build_bot_card_from_analyses(
+def build_bot_card_from_map(
     model,
     processor,
     project_name: str,
     file_name: str,
-    analyses: list[dict],
+    event_map: dict,
     persona_data: dict | None = None,
     metadata_text: str = "",
     card_name: str = "",
@@ -133,7 +48,7 @@ def build_bot_card_from_analyses(
     persona_data = persona_data or {}
     prompt = build_card_synthesis_prompt(
         json_rules=_json_rules(model, processor),
-        analyses=analyses,
+        event_map=event_map,
         persona_data=persona_data,
         metadata_text=metadata_text,
     )
@@ -157,61 +72,70 @@ def generate_bot_card(
 ) -> dict:
     file_name, original_chunks, translated_chunks = load_script_chunks_for_project(project_name)
     source_chunks = select_source_chunks(original_chunks, translated_chunks, prefer_translated)
-    if not source_chunks:
-        source_chunks = load_scenario_chunks(project_name)
+    
+    # Rebuild script text from small chunks
+    script_text = ""
+    if source_chunks:
+        script_text = "\n".join(source_chunks)
+    else:
+        # Fallback to scenario
+        scenario_chunks = load_scenario_chunks(project_name)
+        script_text = "\n".join(scenario_chunks)
+
+    if not script_text.strip():
+        raise ValueError("대본 스크립트를 찾을 수 없습니다. 먼저 대본을 프로젝트로 저장해 주세요.")
+
+    from core.document import chunk_text
+    from core.event_mapper import MAP_CHUNK_SIZE, summarize_chunk, extract_event_map
+
+    # Re-slice into large chunks (3500 chars) for Map stage
+    large_chunks = chunk_text(script_text, chunk_size=MAP_CHUNK_SIZE)
+    if not large_chunks:
+        raise ValueError("대본 청크 분할에 실패했습니다.")
+
     if max_chunks:
-        source_chunks = source_chunks[:max_chunks]
-    if not source_chunks:
-        raise ValueError("대본 청크를 찾을 수 없습니다. 먼저 대본을 프로젝트로 저장해 주세요.")
+        large_chunks = large_chunks[:max_chunks]
 
-    analyses = analyze_all_chunks(
-        model,
-        processor,
-        file_name=file_name,
-        source_chunks=source_chunks,
-        metadata_text=metadata_text,
-        progress_callback=progress_callback,
-    )
+    # Stage 1: Map (Chunk-wise summarization)
+    chunk_summaries = []
+    total_large = len(large_chunks)
+    for idx, chunk in enumerate(large_chunks):
+        if progress_callback:
+            progress_callback(idx, total_large, "chunk")
+        summary = summarize_chunk(
+            model=model,
+            processor=processor,
+            file_name=file_name,
+            chunk_text=chunk,
+            chunk_index=idx,
+            total_chunks=total_large,
+        )
+        chunk_summaries.append(summary)
+
+    # Stage 2: Reduce (Global Event & Causal Map extraction)
     if progress_callback:
-        progress_callback(len(source_chunks), len(source_chunks), "synthesis")
+        progress_callback(total_large, total_large, "synthesis")
 
-    card = build_bot_card_from_analyses(
-        model,
-        processor,
+    event_map = extract_event_map(
+        model=model,
+        processor=processor,
+        file_name=file_name,
+        chunk_summaries=chunk_summaries,
+        metadata_text=metadata_text,
+    )
+
+    # Stage 3: Synthesis (Final Bot Card generation)
+    card = build_bot_card_from_map(
+        model=model,
+        processor=processor,
         project_name=project_name,
         file_name=file_name,
-        analyses=analyses,
+        event_map=event_map,
         persona_data=load_persona_for_project(project_name),
         metadata_text=metadata_text,
         card_name=card_name,
     )
+    
     save_bot_card(file_name, card)
     save_project_bot_card(project_name, card)
     return card
-
-
-def analyze_all_chunks(
-    model,
-    processor,
-    file_name: str,
-    source_chunks: list[str],
-    metadata_text: str = "",
-    progress_callback=None,
-) -> list[dict]:
-    analyses = []
-    total = len(source_chunks)
-    for idx, chunk in enumerate(source_chunks):
-        if progress_callback:
-            progress_callback(idx, total, "chunk")
-        analyses.append(
-            analyze_bot_card_chunk(
-                model,
-                processor,
-                file_name=file_name,
-                chunk_text=chunk,
-                chunk_index=idx,
-                total_chunks=total,
-                metadata_text=metadata_text,
-            )
-        )
-    return analyses

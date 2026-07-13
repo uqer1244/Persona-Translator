@@ -115,6 +115,6 @@ def render_tab_chat(params: dict):
             ".charx 다운로드",
             data=charx_bytes,
             file_name=_card_filename(card, "charx"),
-            mime="application/zip",
+            mime="application/octet-stream",
             width="stretch",
         )

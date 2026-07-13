@@ -105,32 +105,10 @@ def make_risu_card(card_fields: dict, fallback_name: str) -> dict:
 def enrich_description_with_story_memory(card_fields: dict) -> str:
     description = str(card_fields.get("description") or "").strip()
     relationship_arc = str(card_fields.get("relationship_arc") or "").strip()
-    memories = _string_list(card_fields.get("recallable_memories", []))
-    timeline = card_fields.get("event_timeline", [])
 
     sections = [description] if description else []
     if relationship_arc:
         sections.append(f"### Relationship After the Story\n{relationship_arc}")
-    if timeline:
-        lines = []
-        for item in timeline[:12]:
-            if not isinstance(item, dict):
-                continue
-            event = str(item.get("event") or "").strip()
-            shift = str(item.get("relationship_shift") or "").strip()
-            memory = str(item.get("memory_for_chat") or "").strip()
-            if not event:
-                continue
-            detail = event
-            if shift:
-                detail += f" / 관계 변화: {shift}"
-            if memory:
-                detail += f" / 회상 방식: {memory}"
-            lines.append(f"- {detail}")
-        if lines:
-            sections.append("### Shared Event Timeline\n" + "\n".join(lines))
-    if memories:
-        sections.append("### Recallable Shared Memories\n" + "\n".join(f"- {memory}" for memory in memories[:16]))
 
     return "\n\n".join(sections)
 
@@ -165,7 +143,46 @@ def build_lorebook_entries(raw_entries: list[dict], card_fields: dict | None = N
             "case_sensitive": False,
             "use_regex": False,
         })
+
     if card_fields:
+        # Add individual script timeline events as separate lorebook entries
+        timeline = card_fields.get("event_timeline", [])
+        for idx, item in enumerate(timeline):
+            if not isinstance(item, dict):
+                continue
+            event = str(item.get("event") or "").strip()
+            if not event:
+                continue
+
+            lore_keys = _string_list(item.get("lore_keys", []))
+            if not lore_keys:
+                # Fallback triggers if empty
+                lore_keys = ["사건", "그때", "기억"]
+
+            relationship_shift = str(item.get("relationship_shift") or "").strip()
+            memory_for_chat = str(item.get("memory_for_chat") or "").strip()
+
+            content_parts = [f"작품 속 사건: {event}"]
+            if relationship_shift:
+                content_parts.append(f"사건 전후 관계 변화: {relationship_shift}")
+            if memory_for_chat:
+                content_parts.append(f"화자의 회상 및 대화 방식: {memory_for_chat}")
+
+            entries.append({
+                "keys": lore_keys,
+                "content": "\n".join(content_parts),
+                "extensions": {},
+                "enabled": True,
+                "insertion_order": 700 + idx,
+                "constant": False,
+                "selective": False,
+                "name": f"작품 사건 {item.get('order', idx+1)}",
+                "comment": f"작품 사건 {item.get('order', idx+1)}",
+                "case_sensitive": False,
+                "use_regex": False,
+            })
+
+        # Add fallback general shared memory entry
         memory_content = _story_memory_lorebook_content(card_fields)
         if memory_content:
             entries.insert(0, {
