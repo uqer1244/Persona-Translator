@@ -52,3 +52,6 @@ test_openrouter.py
 .test_*
 
 /scratch
+
+# Local SQLite Database
+asmr_studio.db

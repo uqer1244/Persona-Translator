@@ -52,22 +52,14 @@ def load_project_bot_card(project_name: str) -> dict | None:
 
 
 def load_progress_for_project(project_name: str) -> dict | None:
-    path = os.path.join(BACKUP_ROOT, project_name, "progress.json")
-    if not os.path.exists(path):
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    from core.progress_store import load_progress
+    return load_progress(project_name)
 
 
 def load_persona_for_project(project_name: str) -> dict:
-    path = os.path.join(BACKUP_ROOT, project_name, "persona.json")
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    from core.progress_store import load_persona_backup
+    res = load_persona_backup(project_name)
+    return res if res else {}
 
 
 def load_script_chunks_for_project(project_name: str) -> tuple[str, list[str], list[str]]:

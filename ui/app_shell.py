@@ -1,7 +1,7 @@
 import streamlit as st
 
 from ui.sidebar import render_sidebar
-from ui.tab_chat import render_tab_chat
+from ui.tab_botcard import render_tab_botcard
 from ui.tab_library import render_tab_library
 from ui.tab_persona import render_tab_persona
 from ui.tab_refine import render_tab_refine
@@ -128,11 +128,11 @@ APP_CSS = """
 
 TAB_LABELS = [
     "0. 라이브러리",
-    "1. 대본 입력",
-    "2. 페르소나 및 용어집 설정",
-    "3. 번역 실행 및 실시간 보기",
-    "4. 교정 및 결과 다운로드",
-    "5. RisuAI 봇카드 제작",
+    "1. 대본불러오기",
+    "2. 페르소나, 단어장, 이미지 분석",
+    "3. 번역",
+    "4. 저장",
+    "5. 봇카드 만들기",
 ]
 
 
@@ -195,7 +195,7 @@ def render_main_tabs(params: dict) -> None:
     with tab4:
         render_tab_refine()
     with tab5:
-        render_tab_chat(params)
+        render_tab_botcard(params)
 
 
 def render_app() -> None:

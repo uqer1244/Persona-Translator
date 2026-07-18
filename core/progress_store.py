@@ -2,9 +2,10 @@ import json
 import hashlib
 import os
 import re
-
+import datetime
 
 BACKUP_ROOT = os.path.abspath("./projects")
+MASTER_GLOSSARY_PATH = os.path.abspath("./master_glossary.json")
 
 def extract_rj_code(text: str) -> str | None:
     if not text:
@@ -21,12 +22,12 @@ DLsite_IMAGE_EXTENSIONS = ("jpg", "webp")
 
 
 def safe_project_name(file_name: str) -> str:
-    # 1. First check if file_name contains RJ code (highly preferred for background threads)
+    # 1. First check if file_name contains RJ code
     rj = extract_rj_code(file_name)
     if rj:
         return rj
 
-    # 2. Check if user manually entered rj_code in session state (catch BaseException for thread safety)
+    # 2. Check if user manually entered rj_code in session state
     try:
         import streamlit as st
         if "rj_code" in st.session_state and st.session_state.rj_code.strip():
@@ -61,11 +62,10 @@ def get_backup_dir(file_name: str, create: bool = False) -> str:
     if create:
         os.makedirs(project_dir, exist_ok=True)
     
-    # 마이그레이션 로직: 기존에 DLdata/RJXXXXXX 내부에 저장되어 있던 메타데이터가 있으면 복사해 옵니다.
+    # Legacy migration copy logic (directory backup fallback)
     old_dir = os.path.join(os.path.abspath("./DLdata"), proj_name)
     if create and os.path.exists(old_dir) and os.path.abspath(old_dir) != os.path.abspath(project_dir):
         import shutil
-        # 주요 프로젝트 설정 복사
         for f in ["progress.json", "persona.json", "chats.json", "thumbnail.jpg", "thumbnail.png", "thumbnail.webp", "scenario.txt"]:
             old_file = os.path.join(old_dir, f)
             new_file = os.path.join(project_dir, f)
@@ -85,7 +85,6 @@ def get_backup_dir(file_name: str, create: bool = False) -> str:
                         shutil.copy(old_file, new_file)
                     except Exception:
                         pass
-        # 이미지 폴더 통째로 복사
         old_images = os.path.join(old_dir, "images")
         new_images = os.path.join(project_dir, "images")
         if os.path.exists(old_images) and not os.path.exists(new_images):
@@ -147,12 +146,7 @@ def _dlsite_thumbnail_urls(rj_code: str) -> list[str]:
 
 
 def download_dlsite_thumbnail(rj_code: str, target_dir: str) -> str | None:
-    """
-    DLsite에서 주어진 RJ 코드에 해당하는 썸네일을 다운로드하여 target_dir에 저장합니다.
-    """
     urls = _dlsite_thumbnail_urls(rj_code)
-    
-    # Extract RJ digits for api.asmr-200.com fallback
     match = re.search(r"RJ(\d+)", rj_code, re.IGNORECASE)
     if not match:
         match = re.search(r"(\d+)", rj_code)
@@ -195,26 +189,66 @@ def get_writable_backup_path(file_name: str) -> str:
     return os.path.join(get_backup_dir(file_name, create=True), "progress.json")
 
 
+# --- SQLite DB Delegated Operations ---
+
 def save_progress(file_name: str, original_chunks: list[str], translated_chunks: list[str], original_script: str = None) -> str:
-    backup_path = get_writable_backup_path(file_name)
-    data = {
-        "file_name": file_name,
-        "original_chunks": original_chunks,
-        "translated_chunks": translated_chunks,
-    }
-    with open(backup_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        
-    # 원본 대본 전체를 scenario.txt로 함께 자동 저장하여 원클릭 복원에 사용합니다.
+    from core.database import db
+    project_name = safe_project_name(file_name)
+    
     if not original_script:
         try:
             import streamlit as st
-            # StopException은 BaseException을 상속받으므로 안전하게 캐칭
             if "original_script" in st.session_state:
                 original_script = st.session_state.original_script
         except BaseException:
-            original_script = None
-
+            pass
+    if not original_script:
+        original_script = "\n".join(original_chunks)
+        
+    translated_script = "\n".join([c for c in translated_chunks if c])
+    rj_code = extract_rj_code(project_name) or extract_rj_code(file_name) or extract_rj_code(original_script) or ""
+    now = datetime.datetime.now().isoformat()
+    
+    # Save project to projects table
+    exists = db.run_query("SELECT 1 FROM projects WHERE project_name = ?", (project_name,), fetch_one=True)
+    if not exists:
+        db.run_query(
+            """
+            INSERT INTO projects (
+                project_name, rj_code, file_name, metadata_text, 
+                original_script, translated_script, tone, relationship, 
+                situation, key_rules, script_summary, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (project_name, rj_code, file_name, "", original_script, translated_script, "", "", "", "[]", "{}", now, now),
+            commit=True
+        )
+    else:
+        db.run_query(
+            """
+            UPDATE projects 
+            SET file_name = ?, rj_code = ?, original_script = ?, translated_script = ?, updated_at = ?
+            WHERE project_name = ?
+            """,
+            (file_name, rj_code, original_script, translated_script, now, project_name),
+            commit=True
+        )
+        
+    # Re-save chunks
+    db.run_query("DELETE FROM chunks WHERE project_name = ?", (project_name,), commit=True)
+    for idx, (orig, trans) in enumerate(zip(original_chunks, translated_chunks)):
+        db.run_query(
+            """
+            INSERT INTO chunks (project_name, chunk_index, original_text, translated_text, status)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (project_name, idx, orig, trans, 'completed' if trans.strip() else 'pending'),
+            commit=True
+        )
+    
+    # Create directories for thumbnails/images
+    get_backup_dir(file_name, create=True)
+    
     if original_script:
         try:
             proj_dir = get_backup_dir(file_name, create=True)
@@ -224,16 +258,28 @@ def save_progress(file_name: str, original_chunks: list[str], translated_chunks:
         except BaseException:
             pass
         
-    return backup_path
+    return os.path.join(get_backup_dir(file_name), "progress.json")
 
 
 def load_progress(file_name: str) -> dict | None:
-    backup_path = get_backup_path(file_name)
-    if not os.path.exists(backup_path):
+    from core.database import db
+    project_name = safe_project_name(file_name)
+    
+    proj = db.run_query("SELECT file_name FROM projects WHERE project_name = ?", (project_name,), fetch_one=True)
+    if not proj:
         return None
-
-    with open(backup_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        
+    chunks = db.run_query(
+        "SELECT original_text, translated_text FROM chunks WHERE project_name = ? ORDER BY chunk_index ASC", 
+        (project_name,), 
+        fetch_all=True
+    )
+    
+    return {
+        "file_name": proj["file_name"],
+        "original_chunks": [c["original_text"] for c in chunks],
+        "translated_chunks": [c["translated_text"] for c in chunks]
+    }
 
 
 def list_saved_images(file_name: str) -> list[str]:
@@ -256,18 +302,45 @@ def get_image_note_path(image_path: str) -> str:
 
 
 def load_image_note(image_path: str) -> str | None:
+    from core.database import db
+    row = db.run_query("SELECT analysis_note FROM image_notes WHERE image_path = ?", (image_path,), fetch_one=True)
+    if row:
+        return row["analysis_note"]
+    
+    # Fallback note file
     note_path = get_image_note_path(image_path)
-    if not os.path.exists(note_path):
-        return None
-
-    with open(note_path, "r", encoding="utf-8") as f:
-        return f.read()
+    if os.path.exists(note_path):
+        try:
+            with open(note_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            pass
+    return None
 
 
 def save_image_note(image_path: str, note: str) -> str:
+    from core.database import db
+    project_name = "unknown"
+    parts = os.path.normpath(image_path).split(os.sep)
+    try:
+        idx = parts.index("projects")
+        if idx + 1 < len(parts):
+            project_name = parts[idx + 1]
+    except ValueError:
+        pass
+        
+    db.run_query(
+        "INSERT OR REPLACE INTO image_notes (project_name, image_path, analysis_note) VALUES (?, ?, ?)",
+        (project_name, image_path, note),
+        commit=True
+    )
+    
     note_path = get_image_note_path(image_path)
-    with open(note_path, "w", encoding="utf-8") as f:
-        f.write(note)
+    try:
+        with open(note_path, "w", encoding="utf-8") as f:
+            f.write(note)
+    except Exception:
+        pass
     return note_path
 
 
@@ -310,6 +383,7 @@ def save_chunk_summary(file_name: str, chunk_idx: int, chunk_text: str, summary:
         json.dump(data, f, ensure_ascii=False, indent=2)
     return summary_path
 
+
 def get_persona_backup_path(file_name: str) -> str:
     return os.path.join(get_backup_dir(file_name), "persona.json")
 
@@ -319,89 +393,159 @@ def get_writable_persona_backup_path(file_name: str) -> str:
 
 
 def save_persona_backup(file_name: str, persona: dict, glossary: list, script_summary: dict = None):
-    path = get_writable_persona_backup_path(file_name)
-    existing_data = {}
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                existing_data = json.load(f)
-        except Exception:
-            pass
-            
-    summary_data = script_summary if script_summary is not None else existing_data.get("script_summary", {})
-    data = {
-        "persona": persona,
-        "glossary_data": glossary,
-        "script_summary": summary_data
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    from core.database import db
+    project_name = safe_project_name(file_name)
+    
+    exists = db.run_query(
+        "SELECT script_summary FROM projects WHERE project_name = ?", 
+        (project_name,), 
+        fetch_one=True
+    )
+    now = datetime.datetime.now().isoformat()
+    
+    existing_summary = "{}"
+    if exists:
+        existing_summary = exists["script_summary"] or "{}"
+    
+    summary_data = script_summary if script_summary is not None else json.loads(existing_summary)
+    
+    if not exists:
+        db.run_query(
+            """
+            INSERT INTO projects (
+                project_name, rj_code, file_name, metadata_text, 
+                original_script, translated_script, tone, relationship, 
+                situation, key_rules, script_summary, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_name, "", file_name, "", "", "", 
+                persona.get("tone", ""), persona.get("relationship", ""), persona.get("situation", ""), 
+                json.dumps(persona.get("key_rules", [])), json.dumps(summary_data), now, now
+            ),
+            commit=True
+        )
+    else:
+        db.run_query(
+            """
+            UPDATE projects
+            SET tone = ?, relationship = ?, situation = ?, key_rules = ?, script_summary = ?, updated_at = ?
+            WHERE project_name = ?
+            """,
+            (
+                persona.get("tone", ""), persona.get("relationship", ""), persona.get("situation", ""), 
+                json.dumps(persona.get("key_rules", [])), json.dumps(summary_data), now, project_name
+            ),
+            commit=True
+        )
+        
+    # Re-save glossary
+    db.run_query("DELETE FROM glossary WHERE project_name = ?", (project_name,), commit=True)
+    for item in glossary:
+        src = (item.get("원어 (Source)") or item.get("source") or "").strip()
+        tgt = (item.get("번역어 (Target)") or item.get("target") or "").strip()
+        ctx = (item.get("설명/뉘앙스 (Context)") or item.get("context") or item.get("설명") or "").strip()
+        is_proper = 1 if item.get("고유명사 (Proper Noun)", False) else 0
+        if src:
+            db.run_query(
+                """
+                INSERT INTO glossary (project_name, source, target, context, is_proper_noun)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (project_name, src, tgt, ctx, is_proper),
+                commit=True
+            )
 
 
 def load_persona_backup(file_name: str) -> dict | None:
-    path = get_persona_backup_path(file_name)
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return None
+    from core.database import db
+    project_name = safe_project_name(file_name)
+    
+    proj = db.run_query(
+        "SELECT tone, relationship, situation, key_rules, script_summary FROM projects WHERE project_name = ?", 
+        (project_name,), 
+        fetch_one=True
+    )
+    if not proj:
+        return None
+        
+    glossary_rows = db.run_query(
+        "SELECT source, target, context, is_proper_noun FROM glossary WHERE project_name = ?",
+        (project_name,),
+        fetch_all=True
+    )
+    
+    glossary_data = []
+    for g in glossary_rows:
+        glossary_data.append({
+            "원어 (Source)": g["source"],
+            "번역어 (Target)": g["target"],
+            "설명/뉘앙스 (Context)": g["context"],
+            "고유명사 (Proper Noun)": bool(g["is_proper_noun"])
+        })
+        
+    try:
+        key_rules = json.loads(proj["key_rules"] or "[]")
+    except Exception:
+        key_rules = []
+        
+    try:
+        summary_data = json.loads(proj["script_summary"] or "{}")
+    except Exception:
+        summary_data = {}
+        
+    return {
+        "persona": {
+            "tone": proj["tone"] or "",
+            "relationship": proj["relationship"] or "",
+            "situation": proj["situation"] or "",
+            "key_rules": key_rules
+        },
+        "glossary_data": glossary_data,
+        "script_summary": summary_data
+    }
 
 
 def list_saved_personas() -> list[str]:
-    if not os.path.exists(BACKUP_ROOT):
-        return []
-    projects = []
-    for d in os.listdir(BACKUP_ROOT):
-        dir_path = os.path.join(BACKUP_ROOT, d)
-        if os.path.isdir(dir_path):
-            if os.path.exists(os.path.join(dir_path, "persona.json")):
-                projects.append(d)
-    projects.sort()
-    return projects
+    from core.database import db
+    rows = db.run_query("SELECT project_name FROM projects ORDER BY project_name ASC", fetch_all=True)
+    return [r["project_name"] for r in rows]
 
 
 def load_persona_by_project_name(project_name: str) -> dict | None:
-    path = os.path.join(BACKUP_ROOT, project_name, "persona.json")
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return None
+    return load_persona_backup(project_name)
 
-
-MASTER_GLOSSARY_PATH = os.path.abspath("./master_glossary.json")
 
 def load_master_glossary() -> list[dict]:
-    if not os.path.exists(MASTER_GLOSSARY_PATH):
-        return []
-    try:
-        with open(MASTER_GLOSSARY_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                # Ensure all items have the required columns
-                normalized = []
-                for item in data:
-                    src = item.get("원어 (Source)") or item.get("source") or ""
-                    tgt = item.get("번역어 (Target)") or item.get("target") or ""
-                    ctx = item.get("설명/뉘앙스 (Context)") or item.get("context") or item.get("설명") or ""
-                    is_proper = item.get("고유명사 (Proper Noun)", False)
-                    if src.strip():
-                        normalized.append({
-                            "원어 (Source)": src.strip(),
-                            "번역어 (Target)": tgt.strip(),
-                            "설명/뉘앙스 (Context)": ctx.strip(),
-                            "고유명사 (Proper Noun)": bool(is_proper)
-                        })
-                return normalized
-    except Exception:
-        pass
-    return []
+    from core.database import db
+    rows = db.run_query("SELECT source, target, context, is_proper_noun FROM glossary WHERE project_name IS NULL ORDER BY source ASC", fetch_all=True)
+    glossary_data = []
+    for g in rows:
+        glossary_data.append({
+            "원어 (Source)": g["source"],
+            "번역어 (Target)": g["target"],
+            "설명/뉘앙스 (Context)": g["context"],
+            "고유명사 (Proper Noun)": bool(g["is_proper_noun"])
+        })
+    return glossary_data
+
 
 def save_master_glossary(glossary_list: list[dict]):
+    from core.database import db
+    db.run_query("DELETE FROM glossary WHERE project_name IS NULL", commit=True)
+    for item in glossary_list:
+        src = str(item.get("원어 (Source)", "")).strip()
+        tgt = str(item.get("번역어 (Target)", "")).strip()
+        ctx = str(item.get("설명/뉘앙스 (Context)", "")).strip()
+        is_proper = 1 if item.get("고유명사 (Proper Noun)", False) else 0
+        if src:
+            db.run_query(
+                "INSERT INTO glossary (project_name, source, target, context, is_proper_noun) VALUES (NULL, ?, ?, ?, ?)",
+                (src, tgt, ctx, is_proper),
+                commit=True
+            )
+            
+    # Write back to JSON file too for backwards compatibility
     normalized = []
     for item in glossary_list:
         src = str(item.get("원어 (Source)", "")).strip()
@@ -416,8 +560,12 @@ def save_master_glossary(glossary_list: list[dict]):
                 "고유명사 (Proper Noun)": bool(is_proper)
             })
     sorted_list = sorted(normalized, key=lambda x: x["원어 (Source)"].lower())
-    with open(MASTER_GLOSSARY_PATH, "w", encoding="utf-8") as f:
-        json.dump(sorted_list, f, ensure_ascii=False, indent=2)
+    try:
+        with open(MASTER_GLOSSARY_PATH, "w", encoding="utf-8") as f:
+            json.dump(sorted_list, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 
 def merge_glossaries(master: list[dict], project: list[dict]) -> list[dict]:
     master_dict = {str(item.get("원어 (Source)", "")).strip(): item for item in master if item.get("원어 (Source)")}
@@ -432,7 +580,6 @@ def merge_glossaries(master: list[dict], project: list[dict]) -> list[dict]:
             master_dict[src]["번역어 (Target)"] = tgt
             if desc:
                 master_dict[src]["설명/뉘앙스 (Context)"] = desc
-            # 만약 프로젝트 단어장에서 명시적으로 고유명사로 체크했거나 기존에 체크되어 있었다면 True 유지
             master_dict[src]["고유명사 (Proper Noun)"] = bool(is_proper or master_dict[src].get("고유명사 (Proper Noun)", False))
         else:
             master_dict[src] = {
@@ -442,3 +589,10 @@ def merge_glossaries(master: list[dict], project: list[dict]) -> list[dict]:
                 "고유명사 (Proper Noun)": bool(is_proper)
             }
     return list(master_dict.values())
+
+
+# Automatically trigger database migration when progress_store is imported
+try:
+    from core.database import db
+except Exception as e:
+    print(f"[DATABASE] Database import failed: {e}")

@@ -13,7 +13,7 @@ from core.model_manager import clear_mlx_cache as _clear_mlx_cache
 from core.document import chunk_text
 from core.bot_card_storage import get_bot_card_dir
 
-EVENT_MAPPER_CACHE_VERSION = 3
+EVENT_MAPPER_CACHE_VERSION = 4
 MAP_CHUNK_SIZE = 3500
 
 
@@ -27,6 +27,36 @@ def _chunk_source_hash(chunk_text: str) -> str:
     return hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
 
 
+def _safe_parse_chunk_json(model, processor, response: str, default_summary: str) -> dict:
+    try:
+        return _parse_json_response(response)
+    except Exception:
+        correction_prompt = f"""{_json_correction_rules(model, processor)}
+
+[오류 결과물]
+{response}
+
+[반드시 JSON 객체만 출력]"""
+        try:
+            corrected = _generate_text(model, processor, correction_prompt, max_tokens=600, temp=0.1, force_json=True).strip()
+            return _parse_json_response(corrected)
+        except Exception:
+            summary_match = re.search(r'"summary"\s*:\s*"([^"]+)"', response)
+            image_prompt_match = re.search(r'"image_prompt"\s*:\s*"([^"]+)"', response)
+            
+            summary = summary_match.group(1) if summary_match else default_summary
+            image_prompt = image_prompt_match.group(1) if image_prompt_match else ""
+            
+            if not summary_match:
+                cleaned = re.sub(r'[{}]', '', response).strip()
+                summary = cleaned
+            
+            return {
+                "summary": summary,
+                "image_prompt": image_prompt
+            }
+
+
 def summarize_chunk(
     model,
     processor,
@@ -36,7 +66,8 @@ def summarize_chunk(
     total_chunks: int,
 ) -> str:
     """
-    각 청크의 핵심 대사와 인물 간 교류, 분위기를 150-250자의 텍스트 요약으로 압축합니다.
+    각 청크의 핵심 대사와 인물 간 교류, 분위기를 150-250자의 텍스트 요약으로 압축하고,
+    anima 이미지 생성 모델용 영문 프롬프트도 함께 추출합니다.
     """
     from core.bot_card_prompts import build_chunk_compression_prompt
 
@@ -49,19 +80,33 @@ def summarize_chunk(
         try:
             with open(cache_path, "r", encoding="utf-8") as f:
                 cached = json.load(f)
-            if cached.get("cache_version") == EVENT_MAPPER_CACHE_VERSION and cached.get("source_hash") == source_hash:
+            if (
+                cached.get("cache_version") == EVENT_MAPPER_CACHE_VERSION
+                and cached.get("source_hash") == source_hash
+                and "image_prompt" in cached
+            ):
                 return cached.get("summary", "")
         except Exception:
             pass
 
     prompt = build_chunk_compression_prompt(
+        json_rules=_json_rules(model, processor),
         chunk_text=chunk_text,
         chunk_index=chunk_index,
         total_chunks=total_chunks,
     )
 
     try:
-        summary = _generate_text(model, processor, prompt, max_tokens=600, temp=0.1).strip()
+        response = _generate_text(model, processor, prompt, max_tokens=1000, temp=0.1, force_json=True).strip()
+        parsed = _safe_parse_chunk_json(model, processor, response, default_summary="")
+        summary = parsed.get("summary", "").strip()
+        image_prompt = parsed.get("image_prompt", "").strip()
+        
+        if not summary:
+            summary = response
+    except Exception as e:
+        summary = f"[Error summarizing chunk {chunk_index + 1}: {e}]"
+        image_prompt = ""
     finally:
         _clear_mlx_cache()
 
@@ -74,6 +119,7 @@ def summarize_chunk(
                     "chunk_index": chunk_index,
                     "source_hash": source_hash,
                     "summary": summary,
+                    "image_prompt": image_prompt,
                 },
                 f,
                 ensure_ascii=False,

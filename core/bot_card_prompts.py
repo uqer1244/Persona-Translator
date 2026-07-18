@@ -58,19 +58,36 @@ CARD_SYNTHESIS_SCHEMA = """{
 }"""
 
 
+CHUNK_SUMMARY_SCHEMA = """{
+  "summary": "이 구간에서 벌어지는 상황 요약 (핵심 사건/교류 위주, 150~250자 내외의 한국어)",
+  "image_prompt": "이 구간의 대표적인 장면을 시각화할 수 있는 영어 이미지 생성 프롬프트 (Stable Diffusion / NovelAI 등 애니메이션 일러스트레이션 모델용 comma-separated tags 형식. 캐릭터 수, 외형 특징, 복장, 표정, 행동, 장소/배경, 조명, 구도, 화풍 관련 태그 반드시 포함)"
+}"""
+
+
 def build_chunk_compression_prompt(
+    json_rules: str,
     chunk_text: str,
     chunk_index: int,
     total_chunks: int,
 ) -> str:
     return f"""
-동인음성 ASMR 대본을 봇카드로 합성하기 위해, 주어진 구간을 150~250자 내외로 초압축 요약하세요.
+동인음성 ASMR 대본을 봇카드로 합성하기 위해, 주어진 구간의 요약과 이미지 생성용 프롬프트를 추출하세요.
 전체 대본 중 {chunk_index + 1}/{total_chunks}번째 구간입니다.
 
-[지침]
-- 무의미한 지문(BGM, SE 등)이나 호흡, 신음 소리 등은 전부 배제하세요.
-- 오직 "누가 무엇을 했고, 어떤 대화가 오갔으며, 인물 간의 감정/태도/관계가 어떻게 움직였는지" 핵심 사건 위주로만 시간순으로 요약하세요.
-- 다른 부연 설명이나 인사말 없이 오직 요약문 텍스트만 출력하세요.
+[추출 지침]
+1. **요약 (summary)**:
+   - 무의미한 지문(BGM, SE 등)이나 호흡, 신음 소리 등은 전부 배제하세요.
+   - 오직 "누가 무엇을 했고, 어떤 대화가 오갔으며, 인물 간의 감정/태도/관계가 어떻게 움직였는지" 핵심 사건 위주로만 시간순으로 요약하세요.
+2. **이미지 프롬프트 (image_prompt)**:
+   - 이 구간에서 가장 대표적이거나 시각적으로 상징적인 장면을 묘사하는 영어 이미지 생성 프롬프트를 작성하세요.
+   - Stable Diffusion, NovelAI, Pony 등의 애니메이션 일러스트레이션 모델에 맞춘 단어/태그(comma-separated tags) 나열 형식으로 작성하세요.
+   - 캐릭터의 수, 헤어스타일, 의상, 표정, 현재 행동, 구도(camera angle, zoom), 배경 디테일, 조명, 분위기, 고화질/애니메이션 스타일 태그를 모두 포함해야 합니다.
+   - **중요**: 로컬 이미지 생성 모델을 사용하여 선정적이거나 자극적인(NSFW/R-18) 이미지도 자유롭게 생성할 수 있습니다. 따라서 대본 상의 수위 높은 스킨십, 노출, 또는 성적인 행위가 포함된 자극적인 장면일지라도 절대 검열하거나 순화하지 마시고, 그 장면의 시각적 요소(예: blushing, heavy breathing, close up on mouth, looking up, holding hands, hugging, intimacy, nudity 등 분위기와 수위에 매칭되는 직접적/간접적 묘사 태그)를 영어 태그로 가감 없이 정확하고 풍부하게 표현해 주세요.
+
+{json_rules}
+
+[출력 JSON]
+{CHUNK_SUMMARY_SCHEMA}
 
 [대본 구간]
 {chunk_text[:5000]}

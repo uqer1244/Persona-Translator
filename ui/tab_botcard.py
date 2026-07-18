@@ -1,10 +1,10 @@
 import json
-
+import os
 import streamlit as st
 
 from core.bot_card import export_charx_bytes, generate_bot_card
 from core.bot_card_storage import load_project_bot_card
-from core.progress_store import list_saved_personas, safe_project_name
+from core.progress_store import list_saved_personas, safe_project_name, BACKUP_ROOT
 
 
 def _card_filename(card: dict, ext: str) -> str:
@@ -13,7 +13,25 @@ def _card_filename(card: dict, ext: str) -> str:
     return f"{safe or 'bot_card'}.{ext}"
 
 
-def render_tab_chat(params: dict):
+def _get_chunk_summaries_for_project(project_name: str) -> list[dict]:
+    summaries_dir = os.path.join(BACKUP_ROOT, project_name, "bot_card", "chunk_summaries")
+    if not os.path.exists(summaries_dir):
+        return []
+    
+    summaries = []
+    try:
+        files = sorted([f for f in os.listdir(summaries_dir) if f.startswith("summary_") and f.endswith(".json")])
+        for filename in files:
+            path = os.path.join(summaries_dir, filename)
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                summaries.append(data)
+    except Exception:
+        pass
+    return summaries
+
+
+def render_tab_botcard(params: dict):
     st.header("대본 이해 기반 RisuAI 봇카드 제작")
     st.caption("전체 대본을 한 번에 KV 캐시에 올리지 않고, 청크별 분석 결과를 캐싱한 뒤 RisuAI 카드 필드로 합성합니다.")
 
