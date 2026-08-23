@@ -1,10 +1,7 @@
 import streamlit as st
 
 from ui.sidebar import render_sidebar
-from ui.tab_botcard import render_tab_botcard
-from ui.tab_library import render_tab_library
 from ui.tab_persona import render_tab_persona
-from ui.tab_refine import render_tab_refine
 from ui.tab_script import render_tab_script
 from ui.tab_translate import render_tab_translate
 
@@ -127,12 +124,9 @@ APP_CSS = """
 """
 
 TAB_LABELS = [
-    "0. 라이브러리",
     "1. 대본불러오기",
     "2. 페르소나, 단어장, 이미지 분석",
     "3. 번역",
-    "4. 저장",
-    "5. 봇카드 만들기",
 ]
 
 
@@ -148,7 +142,7 @@ def configure_page() -> None:
 
 def render_header() -> None:
     st.title("PersonaASMR-Translator")
-    st.markdown("로컬 MLX VLM (Gemma 4 12B) 기반 ASMR 맞춤형 페르소나 번역 시스템")
+    st.markdown("로컬 MLX / OpenAI 호환 API 기반 ASMR 맞춤형 페르소나 번역 시스템")
 
 
 def render_workflow_summary() -> None:
@@ -182,20 +176,14 @@ def render_workflow_summary() -> None:
 
 
 def render_main_tabs(params: dict) -> None:
-    tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs(TAB_LABELS)
+    tab1, tab2, tab3 = st.tabs(TAB_LABELS)
 
-    with tab0:
-        render_tab_library()
     with tab1:
         render_tab_script()
     with tab2:
         render_tab_persona()
     with tab3:
         render_tab_translate(params)
-    with tab4:
-        render_tab_refine()
-    with tab5:
-        render_tab_botcard(params)
 
 
 def render_app() -> None:

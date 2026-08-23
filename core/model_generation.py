@@ -2,7 +2,7 @@ def model_family(model, processor) -> str:
     from core.model_runtime import wrap_model_runtime
 
     runtime = wrap_model_runtime(model, processor)
-    if runtime.backend_key in {"mlx", "openrouter", "api"}:
+    if runtime.backend_key in {"mlx", "openai", "api"}:
         return runtime.family
 
     config = getattr(model, "config", None)
@@ -74,9 +74,9 @@ def generate_text(
             image_paths = []
 
     try:
-        from core.openrouter import OpenRouterClient
-        if isinstance(model, OpenRouterClient):
-            return _generate_openrouter_text(
+        from core.openai_compat import OpenAICompatClient
+        if isinstance(model, OpenAICompatClient):
+            return _generate_openai_text(
                 model,
                 prompt_content,
                 image_paths,
@@ -154,7 +154,7 @@ def generate_text(
     return output
 
 
-def _generate_openrouter_text(model, prompt_content: str, image_paths: list[str], max_tokens: int, temp: float) -> str:
+def _generate_openai_text(model, prompt_content: str, image_paths: list[str], max_tokens: int, temp: float) -> str:
     import base64
     import os
 
@@ -193,7 +193,7 @@ def _generate_openrouter_text(model, prompt_content: str, image_paths: list[str]
         except Exception as e:
             if retry == max_retries - 1:
                 raise e
-            print(f"[OpenRouter RETRY] Error occurred, retrying: {e}")
+            print(f"[OpenAI API RETRY] Error occurred, retrying: {e}")
 
     return ""
 

@@ -99,8 +99,8 @@ def stream_prompt(
     from core.utils import has_repetition, strip_repetition
 
     try:
-        from core.openrouter import OpenRouterClient
-        if isinstance(model, OpenRouterClient):
+        from core.openai_compat import OpenAICompatClient
+        if isinstance(model, OpenAICompatClient):
             messages = [{"role": "user", "content": prompt}]
             generator = model.generate_stream(messages, temp=temp, max_tokens=max_tokens)
             output = ""
@@ -211,8 +211,8 @@ def translate_one_chunk(
     prompt_cache_mgr: Optional[PromptCacheManager] = None,
 ) -> str | tuple[str, str] | None:
     try:
-        from core.openrouter import OpenRouterClient
-        is_or = isinstance(model, OpenRouterClient)
+        from core.openai_compat import OpenAICompatClient
+        is_or = isinstance(model, OpenAICompatClient)
     except ImportError:
         is_or = False
 
@@ -268,16 +268,16 @@ def translate_script(
     is_subtitle = is_srt or file_name.endswith(".vtt") or file_name.endswith(".lrc")
     is_vlm_model = hasattr(processor, "image_processor")
     
-    is_openrouter = False
+    is_api_backend = False
     try:
-        from core.openrouter import OpenRouterClient
-        if isinstance(model, OpenRouterClient):
-            is_openrouter = True
+        from core.openai_compat import OpenAICompatClient
+        if isinstance(model, OpenAICompatClient):
+            is_api_backend = True
     except ImportError:
         pass
-        
+
     prompt_cache_mgr = None
-    if not is_vlm_model and not is_openrouter:
+    if not is_vlm_model and not is_api_backend:
         prompt_cache_mgr = PromptCacheManager(model)
 
     if is_srt or file_name.endswith(".vtt"):

@@ -25,50 +25,14 @@ BACKEND_SPECS = {
         available=True,
         note="현재 구현된 로컬 백엔드입니다. 모델 config에 따라 LM/VLM을 자동 판별합니다.",
     ),
-    "openrouter": RuntimeBackendSpec(
-        key="openrouter",
-        label="OpenRouter API",
+    "openai": RuntimeBackendSpec(
+        key="openai",
+        label="OpenAI 호환 API",
         local=False,
         supports_text=True,
         supports_vision=True,
         available=True,
-        note="원격 API 백엔드입니다. 실제 이미지 입력 가능 여부는 선택한 API 모델에 따라 다릅니다.",
-    ),
-    "cuda": RuntimeBackendSpec(
-        key="cuda",
-        label="CUDA",
-        local=True,
-        supports_text=True,
-        supports_vision=True,
-        available=False,
-        note="어댑터 슬롯만 준비됨. Transformers/vLLM/llama.cpp 등 구현 선택 필요.",
-    ),
-    "openvino": RuntimeBackendSpec(
-        key="openvino",
-        label="OpenVINO",
-        local=True,
-        supports_text=True,
-        supports_vision=True,
-        available=False,
-        note="어댑터 슬롯만 준비됨. OpenVINO GenAI 연동 필요.",
-    ),
-    "snapdragon": RuntimeBackendSpec(
-        key="snapdragon",
-        label="Snapdragon SDK",
-        local=True,
-        supports_text=True,
-        supports_vision=True,
-        available=False,
-        note="어댑터 슬롯만 준비됨. Qualcomm AI Runtime 연동 필요.",
-    ),
-    "rocm": RuntimeBackendSpec(
-        key="rocm",
-        label="ROCm / Radeon",
-        local=True,
-        supports_text=True,
-        supports_vision=True,
-        available=False,
-        note="어댑터 슬롯만 준비됨. PyTorch ROCm 또는 llama.cpp HIP 연동 필요.",
+        note="원격 API 백엔드입니다. OpenAI API, llama.cpp 서버 등 OpenAI 호환 /v1/chat/completions 엔드포인트를 지원합니다.",
     ),
 }
 
@@ -143,9 +107,9 @@ class ApiRuntime(ModelRuntime):
         return "api"
 
 
-class OpenRouterRuntime(ApiRuntime):
-    backend_key = "openrouter"
-    display_name = "OpenRouter"
+class OpenAICompatRuntime(ApiRuntime):
+    backend_key = "openai"
+    display_name = "OpenAI 호환 API"
 
 
 def wrap_model_runtime(
@@ -159,8 +123,8 @@ def wrap_model_runtime(
         return model
 
     backend = backend_key or detect_backend_key(model, processor)
-    if backend == "openrouter":
-        return OpenRouterRuntime(
+    if backend == "openai":
+        return OpenAICompatRuntime(
             model=model,
             model_id=model_id,
             supports_vision=bool(supports_vision if supports_vision is not None else getattr(model, "supports_vision", False)),
@@ -172,10 +136,10 @@ def wrap_model_runtime(
 
 def detect_backend_key(model: Any, processor: Any = None) -> str:
     try:
-        from core.openrouter import OpenRouterClient
+        from core.openai_compat import OpenAICompatClient
 
-        if isinstance(model, OpenRouterClient):
-            return "openrouter"
+        if isinstance(model, OpenAICompatClient):
+            return "openai"
     except ImportError:
         pass
 

@@ -39,8 +39,6 @@ SESSION_DEFAULTS = {
     "single_cancel_tokens": {},
     "rj_code": "",
     "last_loaded_project_dir": "",
-    "bot_card": {},
-    "bot_card_preview": None,
 }
 
 

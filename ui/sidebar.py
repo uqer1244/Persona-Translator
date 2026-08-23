@@ -14,7 +14,7 @@ def render_sidebar() -> dict:
         st.header("시스템 설정")
         
         # 1. 추론 엔진 선택
-        engine_options = ["mlx-vlm (로컬 실행)", "OpenRouter API (원격 실행)"]
+        engine_options = ["mlx-vlm (로컬 실행)", "OpenAI 호환 API (원격/로컬 서버)"]
         if "inference_engine" not in st.session_state:
             st.session_state.inference_engine = "mlx-vlm (로컬 실행)"
             
@@ -97,87 +97,73 @@ def render_sidebar() -> dict:
                     unload_model()
                     st.rerun()
         else:
-            # OpenRouter API 설정
-            openrouter_key = st.text_input(
-                "OpenRouter API Key",
-                value=st.session_state.get("openrouter_api_key", os.environ.get("OPENROUTER_API_KEY", "")),
+            # OpenAI 호환 API 설정
+            api_base_url = st.text_input(
+                "API Base URL",
+                value=st.session_state.get("openai_base_url", "https://api.openai.com/v1"),
+                help="OpenAI: https://api.openai.com/v1 · llama.cpp 서버: http://localhost:8080/v1",
+                disabled=is_running
+            )
+            st.session_state.openai_base_url = api_base_url
+
+            api_key = st.text_input(
+                "API Key (로컬 서버는 비워도 됨)",
+                value=st.session_state.get("openai_api_key", os.environ.get("OPENAI_API_KEY", "")),
                 type="password",
                 disabled=is_running
             )
-            st.session_state.openrouter_api_key = openrouter_key
+            st.session_state.openai_api_key = api_key
 
-            or_model_options = [
-                "nvidia/nemotron-3-ultra-550b-a55b:free",
-                "직접 입력..."
-            ]
-            
-            saved_or_model = st.session_state.get("openrouter_model", "nvidia/nemotron-3-ultra-550b-a55b:free")
-            default_or_idx = 0
-            if saved_or_model in or_model_options:
-                default_or_idx = or_model_options.index(saved_or_model)
-            else:
-                default_or_idx = len(or_model_options) - 1 # 직접 입력
-                
-            selected_or_option = st.selectbox(
-                "오픈라우터 모델 선택",
-                options=or_model_options,
-                index=default_or_idx,
+            api_model_name = st.text_input(
+                "모델 이름",
+                value=st.session_state.get("openai_model", "gpt-4o-mini"),
+                help="예: gpt-4o-mini, llama3 등. llama.cpp 서버는 로드한 모델 이름을 입력하세요.",
                 disabled=is_running
             )
-            
-            if selected_or_option == "직접 입력...":
-                or_model_name = st.text_input(
-                    "오픈라우터 모델 ID 입력",
-                    value=saved_or_model if saved_or_model not in or_model_options else "nvidia/nemotron-3-ultra-550b-a55b:free",
-                    disabled=is_running
-                )
-            else:
-                or_model_name = selected_or_option
-                
-            st.session_state.openrouter_model = or_model_name
-            openrouter_supports_vision = st.checkbox(
+            st.session_state.openai_model = api_model_name
+
+            api_supports_vision = st.checkbox(
                 "선택한 API 모델 이미지 분석 사용",
-                value=st.session_state.get("openrouter_supports_vision", False),
-                help="OpenRouter 모델이 vision 입력을 지원할 때만 켜세요. 꺼져 있으면 소개 이미지는 건너뛰고 텍스트 대본만 분석합니다.",
+                value=st.session_state.get("openai_supports_vision", False),
+                help="API 모델이 vision 입력을 지원할 때만 켜세요. 꺼져 있으면 소개 이미지는 건너뛰고 텍스트 대본만 분석합니다.",
                 disabled=is_running,
             )
-            st.session_state.openrouter_supports_vision = openrouter_supports_vision
+            st.session_state.openai_supports_vision = api_supports_vision
 
-            # OpenRouter Connection button
             if not st.session_state.model_loaded:
                 st.markdown('<div class="status-box status-warn">API 연결 필요</div>', unsafe_allow_html=True)
-                if st.button("오픈라우터 API 활성화", width="stretch", disabled=is_running):
-                    if not openrouter_key.strip():
-                        st.error("API Key를 입력해 주세요.")
+                if st.button("OpenAI 호환 API 연결", width="stretch", disabled=is_running):
+                    if not api_base_url.strip():
+                        st.error("Base URL을 입력해 주세요.")
                     else:
                         try:
-                            with st.spinner("오픈라우터 API 활성화 중..."):
-                                from core.openrouter import OpenRouterClient
-                                client = OpenRouterClient(api_key=openrouter_key, model_name=or_model_name)
-                                client.supports_vision = openrouter_supports_vision
+                            with st.spinner("OpenAI 호환 API 활성화 중..."):
+                                from core.openai_compat import OpenAICompatClient
+                                client = OpenAICompatClient(base_url=api_base_url, api_key=api_key, model_name=api_model_name)
+                                client.supports_vision = api_supports_vision
                                 st.session_state.model = client
                                 st.session_state.processor = None
                                 st.session_state.model_runtime = wrap_model_runtime(
                                     client,
                                     None,
-                                    backend_key="openrouter",
-                                    model_id=or_model_name,
-                                    supports_vision=openrouter_supports_vision,
+                                    backend_key="openai",
+                                    model_id=api_model_name,
+                                    supports_vision=api_supports_vision,
                                 )
                                 st.session_state.model_loaded = True
-                            st.success("오픈라우터 API 연결 완료!")
+                            st.success("OpenAI 호환 API 연결 완료!")
                             st.rerun()
                         except Exception as e:
                             st.error(f"연결 중 오류 발생: {e}")
             else:
                 st.markdown('<div class="status-box status-ok">API 연결 완료</div>', unsafe_allow_html=True)
-                st.info(f"현재 모델: {st.session_state.openrouter_model}")
+                st.info(f"현재 모델: {st.session_state.openai_model}")
                 if st.button("API 연결 해제", width="stretch", disabled=is_running):
                     unload_model()
                     st.rerun()
         st.divider()
         with st.expander("모델 런타임/가속기 어댑터", expanded=False):
-            st.caption("현재는 MLX와 OpenRouter만 실제 실행됩니다. 나머지는 교체 가능한 어댑터 슬롯입니다.")
+            st.caption("현재는 MLX와 OpenAI 호환 API를 실제 실행합니다.")
             for spec in BACKEND_SPECS.values():
                 state = "사용 가능" if spec.available else "준비 슬롯"
                 vision = "VLM 가능" if spec.supports_vision else "LM 전용"
@@ -200,18 +186,8 @@ def render_sidebar() -> dict:
     st.sidebar.divider()
     st.sidebar.subheader("📈 실시간 시스템 및 성능")
     
-    if st.session_state.get("inference_engine") == "OpenRouter API (원격 실행)":
-        from core.openrouter import get_openrouter_request_count, MAX_DAILY_REQUESTS
-        or_count = get_openrouter_request_count()
-        st.sidebar.markdown(f"**OpenRouter API 호출량** ({or_count} / {MAX_DAILY_REQUESTS}회)")
-        progress_val = min(1.0, or_count / MAX_DAILY_REQUESTS)
-        st.sidebar.progress(progress_val)
-        if or_count >= MAX_DAILY_REQUESTS:
-            st.sidebar.error("오늘의 API 호출 한도(900회)를 초과했습니다. 내일까지 대기 필요.")
-        elif or_count >= 800:
-            st.sidebar.warning("일일 제한 권장량 도달 임박")
-        else:
-            st.sidebar.caption(f"일일 무료 한도 초과 방지를 위한 일시정지선")
+    if st.session_state.get("inference_engine") == "OpenAI 호환 API (원격/로컬 서버)":
+        st.sidebar.caption(f"연결된 API 모델: {st.session_state.get('openai_model', '-')}")
         st.sidebar.divider()
     
     from core.utils import get_memory_stats
