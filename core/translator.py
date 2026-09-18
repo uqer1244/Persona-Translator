@@ -40,7 +40,6 @@ from core.document import (
     clean_markdown,
     chunk_srt,
     chunk_text,
-    estimate_token_count,
 )
 
 
@@ -80,7 +79,6 @@ def translate_one_chunk(
     repetition_penalty: float = 1.1,
     cancel_token: dict = None,
     token_callback=None,
-    context_window: int = 8192,
 ) -> str | None:
     try:
         from core.openai_compat import OpenAICompatClient
@@ -88,15 +86,13 @@ def translate_one_chunk(
     except ImportError:
         is_or = False
 
-    prompt_tokens = estimate_token_count(prompt)
-    available_output = max(256, context_window - prompt_tokens - 128)
     return stream_prompt(
         model,
         processor,
         prompt,
         temp=temp,
         repetition_penalty=repetition_penalty,
-        max_tokens=min(3000 if is_or else 1500, available_output),
+        max_tokens=3000 if is_or else 1500,
         cancel_token=cancel_token,
         token_callback=token_callback,
     )
@@ -131,8 +127,6 @@ def translate_script(
             is_api_backend = True
     except ImportError:
         pass
-
-    context_window = max(256, int(getattr(model, "context_window", 8192)))
 
     if is_srt or file_name.endswith(".vtt"):
         chunks = chunk_srt(script, target_chunk_size=chunk_size)
@@ -199,7 +193,6 @@ def translate_script(
             repetition_penalty=repetition_penalty,
             cancel_token=cancel_token,
             token_callback=on_token,
-            context_window=context_window,
         )
 
         if chunk_translation_clean is None:

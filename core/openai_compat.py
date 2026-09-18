@@ -11,11 +11,10 @@ class OpenAICompatClient:
       - http://localhost:8080/v1   (llama.cpp llama-server)
     """
 
-    def __init__(self, base_url: str, api_key: str, model_name: str, context_window: int = 8192):
+    def __init__(self, base_url: str, api_key: str, model_name: str):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model_name = model_name
-        self.context_window = max(256, int(context_window))
         self.supports_vision = False
         self.config = FakeConfig()
 

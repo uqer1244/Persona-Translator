@@ -16,9 +16,8 @@ Persona Translator는 외부 oMLX/OpenAI 호환 서버에 연결해 대본 전�
 
 - `POST /v1/chat/completions` 스트리밍 번역
 - `GET /v1/models` 연결 테스트와 모델 목록 확인
-- oMLX Base URL, API Key, 모델명, Context Window 설정
-- 모델 메타데이터에 Context Window가 있으면 연결 테스트 시 자동 반영
-- 입력 토큰과 출력 예약 공간을 고려한 청크 크기 및 `max_tokens` 계산
+- oMLX Base URL, API Key, 모델명 설정
+- 모델 서버가 처리하는 입력·출력 한도에 맞춰 고정 청크와 출력 상한을 사용
 
 ### 청크 작업과 부분 재번역
 
@@ -27,16 +26,6 @@ Persona Translator는 외부 oMLX/OpenAI 호환 서버에 연결해 대본 전�
 - 전체 번역 및 개별 청크 재번역
 - SSE를 통한 토큰 단위 진행 상태 표시
 - 번역 설정은 브라우저 `localStorage`에 저장
-
-## 32K Context 모델 운용
-
-oMLX에서 Context Window와 최대 출력 토큰을 각각 32K로 설정하더라도 각 요청의 실제 제한은 다음과 같습니다.
-
-```text
-입력 토큰 + 출력 토큰 <= 모델 Context Window
-```
-
-따라서 애플리케이션은 매 요청마다 프롬프트 토큰을 추정하고, 남은 공간에서 출력 `max_tokens`를 계산합니다. 청크 번역은 전체 32K 출력을 요청하지 않고, 현재 청크와 페르소나·직전 맥락을 수용한 뒤 필요한 출력 공간만 예약합니다.
 
 ## 설치 및 실행
 

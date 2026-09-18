@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from core.document import calculate_optimal_chunk_size, chunk_srt, chunk_text, estimate_token_count
+from core.document import chunk_srt, chunk_text
 from core.openai_compat import OpenAICompatClient
 from core.json_repair import parse_json_response
 from core.translator import (
@@ -41,7 +41,6 @@ class ProjectRequest(BaseModel):
     base_url: str = "http://127.0.0.1:8000/v1"
     api_key: str = ""
     model_name: str = "omlx-model"
-    context_window: int = Field(default=8192, ge=256, le=1_000_000)
     chunk_size: int | None = Field(default=None, ge=300, le=1800)
     translate_directives: bool = True
     persona_source: str = "auto"
@@ -73,7 +72,6 @@ class Project:
             "glossary": self.request.glossary,
             "base_url": self.request.base_url,
             "model_name": self.request.model_name,
-            "context_window": self.request.context_window,
             "chunk_size": self.request.chunk_size,
             "translate_directives": self.request.translate_directives,
             "persona_source": self.request.persona_source,
@@ -91,12 +89,11 @@ def _make_client(project: Project) -> OpenAICompatClient:
         base_url=project.request.base_url,
         api_key=project.request.api_key,
         model_name=project.request.model_name,
-        context_window=project.request.context_window,
     )
 
 
 def _chunk_script(request: ProjectRequest) -> list[str]:
-    size = request.chunk_size or calculate_optimal_chunk_size(request.context_window)
+    size = request.chunk_size or 900
     is_subtitle = request.file_name.lower().endswith((".srt", ".vtt", ".lrc"))
     if is_subtitle:
         return chunk_srt(request.script, target_chunk_size=size)
@@ -124,20 +121,11 @@ def _persona_prompt(script: str, file_name: str) -> list[dict[str, str]]:
 
 
 def _analyze_persona(project: Project) -> dict[str, Any]:
-    messages = _persona_prompt(project.request.script, project.request.file_name)
-    prompt_tokens = sum(estimate_token_count(message["content"]) for message in messages)
-    reserve = 2400
-    if prompt_tokens + reserve > project.request.context_window:
-        raise ValueError(
-            f"전체 대본이 설정된 Context Window를 초과합니다 "
-            f"(예상 {prompt_tokens + reserve}토큰 / 한도 {project.request.context_window}). "
-            "Context Window를 늘리거나 대본을 줄여 주세요."
-        )
     client = _make_client(project)
     response = client.generate(
-        messages,
+        _persona_prompt(project.request.script, project.request.file_name),
         temp=0.2,
-        max_tokens=min(2400, project.request.context_window - prompt_tokens),
+        max_tokens=2400,
     )
     raw = response.text.strip()
     try:
@@ -196,7 +184,7 @@ def _run_batch(project: Project) -> None:
             is_srt=project.request.file_name.lower().endswith(".srt"),
             translate_directives=project.request.translate_directives,
             chunk_size=project.request.chunk_size
-            or calculate_optimal_chunk_size(project.request.context_window),
+            or 900,
             existing_translations=project.translations,
             cancel_token=project.cancel,
             progress_callback=progress,
@@ -256,7 +244,6 @@ def _run_single(project: Project, index: int) -> None:
             prompt,
             cancel_token=project.cancel,
             token_callback=on_token,
-            context_window=project.request.context_window,
         )
         if isinstance(result, tuple):
             result = result[1]
@@ -284,7 +271,7 @@ async def create_project(request: ProjectRequest) -> dict[str, Any]:
     if not request.script.strip():
         raise HTTPException(status_code=400, detail="대본이 비어 있습니다.")
     if not request.chunk_size:
-        request.chunk_size = calculate_optimal_chunk_size(request.context_window)
+        request.chunk_size = 900
     chunks = _chunk_script(request)
     project = Project(str(uuid.uuid4()), request, chunks, [""] * len(chunks))
     projects[project.id] = project
@@ -295,28 +282,6 @@ class ConnectionRequest(BaseModel):
     base_url: str = "http://127.0.0.1:8000/v1"
     api_key: str = ""
     model_name: str = ""
-
-
-def _extract_context_window(model: dict[str, Any]) -> int | None:
-    """Read common context-limit metadata without assuming an API-specific field."""
-    keys = (
-        "context_window",
-        "context_length",
-        "max_context_length",
-        "max_model_len",
-        "n_ctx",
-    )
-    for key in keys:
-        value = model.get(key)
-        if isinstance(value, (int, float)) and value >= 256:
-            return int(value)
-    metadata = model.get("metadata")
-    if isinstance(metadata, dict):
-        for key in keys:
-            value = metadata.get(key)
-            if isinstance(value, (int, float)) and value >= 256:
-                return int(value)
-    return None
 
 
 @app.post("/api/connection/test")
@@ -348,14 +313,11 @@ async def test_connection(request: ConnectionRequest) -> dict[str, Any]:
     model_items = [item for item in payload.get("data", []) if isinstance(item, dict)]
     models = [item.get("id") for item in model_items if item.get("id")]
     selected = request.model_name.strip()
-    selected_item = next((item for item in model_items if item.get("id") == (selected or (models[0] if models else ""))), {})
-    context_window = _extract_context_window(selected_item)
     return {
         "status": "connected",
         "base_url": base_url,
         "models": models,
         "model_name": selected or (models[0] if models else ""),
-        "context_window": context_window,
     }
 
 
