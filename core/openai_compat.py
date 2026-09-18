@@ -11,10 +11,11 @@ class OpenAICompatClient:
       - http://localhost:8080/v1   (llama.cpp llama-server)
     """
 
-    def __init__(self, base_url: str, api_key: str, model_name: str):
+    def __init__(self, base_url: str, api_key: str, model_name: str, context_window: int = 8192):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model_name = model_name
+        self.context_window = max(256, int(context_window))
         self.supports_vision = False
         self.config = FakeConfig()
 
@@ -62,7 +63,12 @@ class OpenAICompatClient:
         }
         response = self._request(payload, stream=False)
         try:
-            text = response.json()["choices"][0]["message"]["content"]
+            try:
+                payload = response.json()
+            except ValueError:
+                from core.json_repair import parse_json_response
+                payload = parse_json_response(response.text)
+            text = payload["choices"][0]["message"]["content"]
             return ResponseChunk(text)
         except Exception as e:
             raise RuntimeError(f"OpenAI 호환 API 응답 파싱 실패: {e}")

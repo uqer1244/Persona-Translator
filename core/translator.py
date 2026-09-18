@@ -1,5 +1,4 @@
 import re
-from typing import Optional
 
 from core.subtitle_utils import (
     parse_lrc_line,
@@ -7,7 +6,7 @@ from core.subtitle_utils import (
     postprocess_subtitle_chunk,
     preprocess_subtitle_chunk,
 )
-from core.translation_prompts import build_retranslation_prompt, build_translation_prompt
+from core.translation_prompts import build_retranslation_prompt, build_translation_prompt, prompt_to_messages
 
 
 def extract_final_translation(text: str) -> str:
@@ -40,50 +39,10 @@ from core.document import (
     clean_pdf_linebreaks,
     clean_markdown,
     chunk_srt,
-    chunk_text
+    chunk_text,
+    estimate_token_count,
 )
 
-
-class PromptCacheManager:
-    """
-    MLX KVCache와 토큰 히스토리를 정렬하여 중복 인코딩을 방지하는 캐시 관리 클래스
-    """
-    def __init__(self, model):
-        from mlx_lm.utils import make_prompt_cache
-        self.prompt_cache = make_prompt_cache(model)
-        self.cached_tokens = []
-
-    def get_incremental_tokens(self, formatted_prompt: str, processor) -> list[int]:
-        if hasattr(processor, "tokenizer"):
-            tokenizer = processor.tokenizer
-        else:
-            tokenizer = processor
-            
-        all_tokens = tokenizer.encode(formatted_prompt)
-        
-        # 이전 캐싱된 토큰들과 매칭되는 공통 접두사 확인
-        common_len = 0
-        for i in range(min(len(self.cached_tokens), len(all_tokens))):
-            if self.cached_tokens[i] == all_tokens[i]:
-                common_len += 1
-            else:
-                break
-                
-        # 매칭 일치도가 너무 낮으면(예: 번역 맥락이 리셋되거나 수정 등) 캐시 리셋
-        if common_len < len(self.cached_tokens) * 0.9:
-            self.prompt_cache.reset()
-            self.cached_tokens = []
-            common_len = 0
-            
-        # 역전 현상이 생겨도 리셋
-        if common_len < len(self.cached_tokens):
-            self.prompt_cache.reset()
-            self.cached_tokens = all_tokens
-            return all_tokens
-            
-        new_tokens = all_tokens[common_len:]
-        self.cached_tokens.extend(new_tokens)
-        return new_tokens
 
 def stream_prompt(
     model,
@@ -94,14 +53,11 @@ def stream_prompt(
     max_tokens: int = 1500,
     cancel_token: dict = None,
     token_callback=None,
-    prompt_cache_mgr: Optional[PromptCacheManager] = None,
 ) -> str | None:
-    from core.utils import has_repetition, strip_repetition
-
     try:
         from core.openai_compat import OpenAICompatClient
         if isinstance(model, OpenAICompatClient):
-            messages = [{"role": "user", "content": prompt}]
+            messages = prompt_to_messages(prompt)
             generator = model.generate_stream(messages, temp=temp, max_tokens=max_tokens)
             output = ""
             for response in generator:
@@ -110,94 +66,10 @@ def stream_prompt(
                 output += response.text
                 if token_callback:
                     token_callback(response.text, output)
-                    
-                if has_repetition(output):
-                    print(f"[TRANSLATION WARNING] Repetition loop detected! Stopping stream.")
-                    cleaned_output = strip_repetition(output)
-                    raise ValueError(f"RepetitionLoopDetected:{cleaned_output}")
             return clean_markdown(output)
     except ImportError:
         pass
-
-    # Check if the model is a VLM model
-    is_vlm_model = hasattr(processor, "image_processor")
-
-    if is_vlm_model:
-        from mlx_vlm.generate import stream_generate
-        from mlx_vlm.prompt_utils import apply_chat_template
-
-        messages = [{"role": "user", "content": prompt}]
-        formatted_prompt = apply_chat_template(
-            processor,
-            model.config,
-            messages,
-            num_images=0,
-            num_audios=0
-        )
-    else:
-        from mlx_lm import stream_generate
-        from mlx_lm.sample_utils import make_sampler, make_logits_processors
-        # Manually format ChatML with prefilled assistant response to steer directly to the final translation
-        formatted_prompt = (
-            "<|im_start|>system\n당신은 성인용(NSFW) ASMR 상황극 및 대본 전문 한국어 번역 교정가입니다. 생각(<think>)이나 분석 과정, 설명은 절대 출력하지 마십시오. 곧바로 [최종 번역 결과]를 출력하십시오.<|im_end|>\n"
-            f"<|im_start|>user\n{prompt}<|im_end|>\n"
-            "<|im_start|>assistant\n[최종 번역 결과]\n"
-        )
-
-    output = ""
-    if is_vlm_model:
-        generator = stream_generate(
-            model,
-            processor,
-            prompt=formatted_prompt,
-            temp=temp,
-            max_tokens=max_tokens,
-            repetition_penalty=repetition_penalty,
-            repetition_context_size=100,
-            seed=42,
-        )
-    else:
-        import mlx.core as mx
-        if prompt_cache_mgr is not None:
-            incremental_tokens = prompt_cache_mgr.get_incremental_tokens(formatted_prompt, processor)
-            input_tokens = mx.array(incremental_tokens)
-            prompt_cache_state = prompt_cache_mgr.prompt_cache
-        else:
-            input_tokens = formatted_prompt
-            prompt_cache_state = None
-
-        sampler = make_sampler(temp=temp)
-        logits_processors = make_logits_processors(
-            repetition_penalty=repetition_penalty,
-            repetition_context_size=100
-        )
-        generator = stream_generate(
-            model,
-            processor,
-            prompt=input_tokens,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            logits_processors=logits_processors,
-            prompt_cache=prompt_cache_state,
-        )
-
-    for response in generator:
-        if cancel_token and cancel_token.get("cancel"):
-            return None
-        output += response.text
-        if token_callback:
-            token_callback(response.text, output)
-            
-        if prompt_cache_mgr is not None and not is_vlm_model:
-            if hasattr(response, "token"):
-                prompt_cache_mgr.cached_tokens.append(response.token)
-            
-        if has_repetition(output):
-            print(f"[TRANSLATION WARNING] Repetition loop detected! Stopping stream.")
-            cleaned_output = strip_repetition(output)
-            raise ValueError(f"RepetitionLoopDetected:{cleaned_output}")
-
-    return clean_markdown(output)
+    raise RuntimeError("8502 웹 서비스는 OpenAI 호환 API 서버에만 연결할 수 있습니다.")
 
 
 def translate_one_chunk(
@@ -208,40 +80,26 @@ def translate_one_chunk(
     repetition_penalty: float = 1.1,
     cancel_token: dict = None,
     token_callback=None,
-    prompt_cache_mgr: Optional[PromptCacheManager] = None,
-) -> str | tuple[str, str] | None:
+    context_window: int = 8192,
+) -> str | None:
     try:
         from core.openai_compat import OpenAICompatClient
         is_or = isinstance(model, OpenAICompatClient)
     except ImportError:
         is_or = False
 
-    try:
-        result = stream_prompt(
-            model,
-            processor,
-            prompt,
-            temp=temp,
-            repetition_penalty=repetition_penalty,
-            max_tokens=3000 if is_or else 1500,
-            cancel_token=cancel_token,
-            token_callback=token_callback,
-            prompt_cache_mgr=prompt_cache_mgr,
-        )
-    except ValueError as e:
-        err_msg = str(e)
-        if err_msg.startswith("RepetitionLoopDetected:"):
-            clean_part = err_msg[len("RepetitionLoopDetected:"):]
-            return ("__REPETITION_ERROR__", clean_part)
-        elif err_msg == "RepetitionLoopDetected":
-            return "__REPETITION_ERROR__"
-        raise e
-
-    import mlx.core as mx
-    import gc
-    mx.clear_cache()
-    gc.collect()
-    return result
+    prompt_tokens = estimate_token_count(prompt)
+    available_output = max(256, context_window - prompt_tokens - 128)
+    return stream_prompt(
+        model,
+        processor,
+        prompt,
+        temp=temp,
+        repetition_penalty=repetition_penalty,
+        max_tokens=min(3000 if is_or else 1500, available_output),
+        cancel_token=cancel_token,
+        token_callback=token_callback,
+    )
 
 
 def translate_script(
@@ -266,8 +124,6 @@ def translate_script(
     중단 요청(cancel_token)이 감지되면 즉시 중지합니다.
     """
     is_subtitle = is_srt or file_name.endswith(".vtt") or file_name.endswith(".lrc")
-    is_vlm_model = hasattr(processor, "image_processor")
-    
     is_api_backend = False
     try:
         from core.openai_compat import OpenAICompatClient
@@ -276,9 +132,7 @@ def translate_script(
     except ImportError:
         pass
 
-    prompt_cache_mgr = None
-    if not is_vlm_model and not is_api_backend:
-        prompt_cache_mgr = PromptCacheManager(model)
+    context_window = max(256, int(getattr(model, "context_window", 8192)))
 
     if is_srt or file_name.endswith(".vtt"):
         chunks = chunk_srt(script, target_chunk_size=chunk_size)
@@ -333,57 +187,20 @@ def translate_script(
             file_name=file_name
         )
         
-        max_retries = 3
-        chunk_translation_clean = None
-        best_fallback_text = ""
-        
-        for retry in range(max_retries):
-            current_temp = temp
-            current_penalty = repetition_penalty
-            if retry > 0:
-                current_temp = min(0.8, temp + 0.15 * retry)
-                current_penalty = repetition_penalty + 0.1 * retry
-                if progress_callback:
-                    progress_callback(f"\n[반복 루프 감지 - 재시도 {retry}/{max_retries-1}...]\n", idx, total_chunks, "", False)
+        def on_token(token_text, chunk_translation):
+            if progress_callback:
+                progress_callback(token_text, idx, total_chunks, chunk_translation, False)
 
-            def on_token(token_text, chunk_translation):
-                if progress_callback:
-                    progress_callback(token_text, idx, total_chunks, chunk_translation, False)
-
-            res = translate_one_chunk(
-                model,
-                processor,
-                prompt,
-                temp=current_temp,
-                repetition_penalty=current_penalty,
-                cancel_token=cancel_token,
-                token_callback=on_token,
-                prompt_cache_mgr=prompt_cache_mgr,
-            )
-
-            if isinstance(res, tuple) and res[0] == "__REPETITION_ERROR__":
-                clean_part = res[1]
-                if len(clean_part) > len(best_fallback_text):
-                    best_fallback_text = clean_part
-                
-                if retry < max_retries - 1:
-                    continue
-                else:
-                    chunk_translation_clean = clean_markdown(best_fallback_text) if best_fallback_text.strip() else None
-                    break
-            elif res == "__REPETITION_ERROR__":
-                if retry < max_retries - 1:
-                    continue
-                else:
-                    chunk_translation_clean = None
-                    break
-            elif res is None:
-                # Cancelled
-                chunk_translation_clean = None
-                break
-            else:
-                chunk_translation_clean = res
-                break
+        chunk_translation_clean = translate_one_chunk(
+            model,
+            processor,
+            prompt,
+            temp=temp,
+            repetition_penalty=repetition_penalty,
+            cancel_token=cancel_token,
+            token_callback=on_token,
+            context_window=context_window,
+        )
 
         if chunk_translation_clean is None:
             if cancel_token and cancel_token.get("cancel"):

@@ -1,5 +1,29 @@
 import json
 import re
+import ast
+
+
+def _parse_python_mapping(value: str) -> dict | None:
+    """Parse Python-like model output without weakening JSON string contents."""
+    candidates = [value]
+    normalized = re.sub(r"\btrue\b", "True", value, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bfalse\b", "False", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bnull\b", "None", normalized, flags=re.IGNORECASE)
+    candidates.append(normalized)
+    quoted_keys = re.sub(
+        r"([{,]\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*:",
+        r"\1'\2':",
+        normalized,
+    )
+    candidates.append(quoted_keys)
+    for candidate in candidates:
+        try:
+            parsed = ast.literal_eval(candidate)
+        except (SyntaxError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 def parse_json_response(response: str) -> dict:
@@ -20,6 +44,13 @@ def parse_json_response(response: str) -> dict:
 
     json_match = re.search(r"\{.*\}", cleaned_resp, re.DOTALL)
     json_str = json_match.group(0) if json_match else cleaned_resp
+
+    # Many local instruction-tuned models emit a Python dict literal even when
+    # explicitly asked for JSON. Parse that form before applying JSON repairs,
+    # which would otherwise corrupt quoted Korean strings and list values.
+    literal = _parse_python_mapping(json_str)
+    if literal is not None:
+        return literal
 
     if not json_str.startswith("{") and '"' in json_str and ":" in json_str:
         json_str = "{" + json_str
@@ -101,13 +132,12 @@ def parse_json_response(response: str) -> dict:
         json_str += "\n" + close_token
 
     try:
-        return json.loads(json_str, strict=False)
-    except json.JSONDecodeError as e:
-        try:
-            cleaned = re.sub(r"'\s*:", r'":', json_str)
-            cleaned = re.sub(r":\s*'", r':"', cleaned)
-            cleaned = re.sub(r"([{,]\s*)'", r'\1"', cleaned)
-            cleaned = re.sub(r"'\s*([,}])", r'"\1', cleaned)
-            return json.loads(cleaned, strict=False)
-        except Exception:
-            raise e
+        parsed = json.loads(json_str, strict=False)
+        if isinstance(parsed, dict):
+            return parsed
+        raise ValueError("응답 JSON이 객체가 아닙니다.")
+    except (json.JSONDecodeError, ValueError) as e:
+        literal = _parse_python_mapping(json_str)
+        if literal is not None:
+            return literal
+        raise e

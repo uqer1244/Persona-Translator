@@ -1,4 +1,27 @@
 import re
+
+
+def estimate_token_count(text: str, tokenizer=None) -> int:
+    """Estimate tokens without requiring a tokenizer for remote API backends."""
+    if tokenizer is not None:
+        try:
+            return len(tokenizer.encode(text, add_special_tokens=False))
+        except (AttributeError, TypeError, ValueError):
+            pass
+    # A conservative mixed CJK/Latin estimate for planning only.
+    return max(1, int(len(text) / 2.2))
+
+
+def calculate_optimal_chunk_size(
+    context_window: int,
+    prompt_overhead_tokens: int = 1100,
+    output_reserve_tokens: int = 1500,
+    safety_factor: float = 0.72,
+) -> int:
+    """Convert a model context limit into a safe character budget."""
+    available = max(256, context_window - prompt_overhead_tokens - output_reserve_tokens)
+    target_tokens = max(180, int(available * safety_factor))
+    return max(300, min(1800, int(target_tokens * 2.2)))
 import logging
 from pypdf import PdfReader
 from pypdf.generic import NumberObject

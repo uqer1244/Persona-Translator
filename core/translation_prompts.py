@@ -6,6 +6,12 @@ def build_persona_section(persona: dict) -> str:
     if persona.get("key_rules"):
         rules = "\n".join([f"  * {rule}" for rule in persona["key_rules"]])
         persona_str += f"- 주요 규칙:\n{rules}"
+    if persona.get("forms_of_address"):
+        forms = "\n".join([f"  * {rule}" for rule in persona["forms_of_address"]])
+        persona_str += f"\n- 호칭/호명 규칙:\n{forms}"
+    if persona.get("style_examples"):
+        examples = "\n".join([f"  * {example}" for example in persona["style_examples"]])
+        persona_str += f"\n- 관찰된 문체 특징:\n{examples}"
     return persona_str
 
 
@@ -116,6 +122,23 @@ def build_translation_prompt(
 - 대본 번역 본문 이외의 어떠한 설명, 질문에 대한 답변, 프롬프트의 반복 출력도 허용되지 않습니다.
 - 오직 번역이 완료된 대본 내용만 출력하세요.
 """
+
+
+def prompt_to_messages(prompt: str) -> list[dict]:
+    """Keep stable translation instructions in the system message for API prefix caching."""
+    context_marker = "\n[이전 번역 맥락"
+    split_at = prompt.find(context_marker)
+    if split_at < 0:
+        split_at = prompt.find("\n[번역할 대본]")
+    if split_at < 0:
+        return [{"role": "user", "content": prompt}]
+
+    system_prompt = prompt[:split_at].strip()
+    user_prompt = prompt[split_at:].strip()
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
 
 def build_retranslation_prompt(
