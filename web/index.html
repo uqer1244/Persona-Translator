@@ -39,9 +39,9 @@
     .eyebrow { color:var(--cyan); font:500 10px "DM Mono",monospace; text-transform:uppercase; letter-spacing:.1em; }
     .muted { color:var(--muted); }
     label { display:block; margin:14px 0 6px; color:#b8c4d5; font-size:11px; font-weight:700; }
-    input, textarea { width:100%; color:var(--text); background:#0c111a; border:1px solid var(--line); border-radius:9px;
+    input, select, textarea { width:100%; color:var(--text); background:#0c111a; border:1px solid var(--line); border-radius:9px;
       outline:none; padding:10px 11px; font-size:12px; transition:border .15s, box-shadow .15s; }
-    input:focus, textarea:focus { border-color:rgba(101,216,255,.7); box-shadow:0 0 0 3px rgba(101,216,255,.1); }
+    input:focus, select:focus, textarea:focus { border-color:rgba(101,216,255,.7); box-shadow:0 0 0 3px rgba(101,216,255,.1); }
     textarea { resize:vertical; line-height:1.55; }
     .script-input { min-height:300px; font-size:13px; }
     .persona-input { min-height:76px; }
@@ -110,9 +110,9 @@
         <div class="section-title"><div><div class="eyebrow">01 / runtime</div><h2>모델 연결</h2></div></div>
         <label>oMLX / OpenAI 호환 Base URL</label><input id="baseUrl" value="http://127.0.0.1:8000/v1">
         <label>API Key</label><input id="apiKey" type="password" placeholder="로컬 서버는 비워도 됨">
-        <label>모델 이름</label><input id="modelName" value="omlx-model">
+        <label>모델 이름</label><select id="modelName"><option value="omlx-model">omlx-model</option></select>
         <button class="btn ghost" id="testConnection">연결 테스트 · 모델 목록 확인</button>
-        <label>Context Window</label><input id="context" type="number" value="8192" min="256" step="256">
+        <label>Context Window</label><select id="context"><option value="4096">4K</option><option value="8192" selected>8K</option><option value="16384">16K</option><option value="32768">32K</option><option value="65536">64K</option><option value="131072">128K</option></select>
         <button class="btn ghost" id="clearSettings">저장된 연결 설정 삭제</button>
         <div class="info-box" style="margin-top:12px">8502는 로컬 모델을 로드하지 않습니다. oMLX의 OpenAI 호환 `/v1/chat/completions`와 `/v1/models`에 연결해서 번역합니다.</div>
       </div>
@@ -181,7 +181,12 @@ function loadSettings() {
   try {
     const values = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
     settingIds.forEach(id => {
-      if (typeof values[id] === 'string') $(id).value = values[id];
+      if (typeof values[id] === 'string') {
+        if (id === 'modelName' && !Array.from($(id).options).some(option => option.value === values[id])) {
+          $(id).add(new Option(values[id], values[id]));
+        }
+        $(id).value = values[id];
+      }
     });
   } catch (_) {
     localStorage.removeItem(SETTINGS_KEY);
@@ -201,6 +206,15 @@ function clearSettings() {
 function termsToObject() { const result={}; document.querySelectorAll('.term-row').forEach(row => { const a=row.querySelector('.term-source').value.trim(), b=row.querySelector('.term-target').value.trim(); if(a&&b) result[a]=b; }); return result; }
 function addTerm(source='', target='') { const row=document.createElement('div'); row.className='term-row'; row.innerHTML=`<input class="term-source" placeholder="원어" value="${esc(source)}"><input class="term-target" placeholder="고정 번역어" value="${esc(target)}"><button class="remove-term" title="삭제">×</button>`; row.querySelector('button').onclick=()=>row.remove(); $('terms').appendChild(row); }
 function updateDraftMetrics() { $('scriptChars').textContent=Number($('script').value.length).toLocaleString(); $('scriptContext').innerHTML=`${Number($('context').value||8192).toLocaleString()}<em>tok</em>`; $('modelPill').textContent=`${$('modelName').value||'model'} · ${Math.round(($('context').value||8192)/1024)}K`; }
+function setModelOptions(models, selected='') {
+  const values = [...new Set([...(models || []), selected].filter(Boolean))];
+  const select = $('modelName');
+  const current = selected || select.value;
+  select.innerHTML = '';
+  (values.length ? values : ['omlx-model']).forEach(model => select.add(new Option(model, model)));
+  if (current && !values.includes(current)) select.add(new Option(current, current));
+  select.value = current || select.options[0].value;
+}
 function renderChunks() {
   if(!project) return;
   const done=project.translations.filter(x=>x&&x.trim()).length, total=project.chunks.length, pct=total?Math.round(done/total*100):0;
@@ -218,7 +232,7 @@ async function testConnection() {
   const res=await fetch('/api/connection/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:$('baseUrl').value,api_key:$('apiKey').value,model_name:$('modelName').value})});
   const data=await res.json();
   if(!res.ok)return toast(data.detail||'연결 테스트 실패');
-  if(data.model_name)$('modelName').value=data.model_name;
+  setModelOptions(data.models, data.model_name);
   if(data.context_window){$('context').value=String(data.context_window); toast(`연결 성공 · Context ${Number(data.context_window).toLocaleString()} 토큰`);}
   saveSettings();
   $('connection').textContent=`oMLX 연결됨 · ${data.models.length||1}개 모델`;
