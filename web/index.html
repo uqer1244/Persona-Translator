@@ -112,6 +112,7 @@
         <label>API Key</label><input id="apiKey" type="password" placeholder="로컬 서버는 비워도 됨">
         <label>모델 이름</label><input id="modelName" value="omlx-model">
         <button class="btn ghost" id="testConnection">연결 테스트 · 모델 목록 확인</button>
+        <label>Context Window</label><input id="context" type="number" value="8192" min="256" step="256">
         <button class="btn ghost" id="clearSettings">저장된 연결 설정 삭제</button>
         <div class="info-box" style="margin-top:12px">8502는 로컬 모델을 로드하지 않습니다. oMLX의 OpenAI 호환 `/v1/chat/completions`와 `/v1/models`에 연결해서 번역합니다.</div>
       </div>
@@ -129,7 +130,7 @@
       <section class="view active" id="view-script">
         <div class="hero"><div><div class="eyebrow">SOURCE SCRIPT</div><h2>번역할 대본을 준비하세요</h2><p>대본 구조를 보존한 채 컨텍스트에 맞는 청크로 분할합니다.</p></div><div class="hero-actions"><button class="btn" id="create">프로젝트 생성</button></div></div>
         <label>원문 대본</label><textarea id="script" class="script-input" placeholder="번역할 대본을 붙여 넣으세요."></textarea>
-        <div class="metrics" style="margin-top:14px"><div class="metric"><span>문자 수</span><strong id="scriptChars">0</strong></div><div class="metric"><span>예상 청크</span><strong id="scriptChunks">—</strong></div><div class="metric"><span>모드</span><strong style="font-size:14px">Auto</strong></div></div>
+        <div class="metrics" style="margin-top:14px"><div class="metric"><span>문자 수</span><strong id="scriptChars">0</strong></div><div class="metric"><span>예상 청크</span><strong id="scriptChunks">—</strong></div><div class="metric"><span>Context</span><strong id="scriptContext">8,192<em>tok</em></strong></div><div class="metric"><span>모드</span><strong style="font-size:14px">Auto</strong></div></div>
       </section>
       <section class="view" id="view-persona">
         <div class="hero"><div><div class="eyebrow">TRANSLATION PROFILE</div><h2>전체 대본에서 번역 성격 추출</h2><p>LLM이 청크를 나누기 전에 대본 전체를 읽고 말투, 관계, 상황, 호칭 규칙을 자동으로 설계합니다.</p></div><div class="hero-actions"><button class="btn violet" id="analyzePersona" disabled>전체 대본 분석</button><button class="btn ghost" id="applyProfile">직접 프로필 적용</button></div></div>
@@ -170,7 +171,7 @@ const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const toast = text => { const el=$('toast'); el.textContent=text; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),2600); };
 const setStatus = text => $('status').textContent = text;
 const SETTINGS_KEY = 'persona-translator.runtime-settings.v1';
-const settingIds = ['baseUrl','apiKey','modelName','fileName','chunkSize'];
+const settingIds = ['baseUrl','apiKey','modelName','context','fileName','chunkSize'];
 function saveSettings() {
   const values = {};
   settingIds.forEach(id => { values[id] = $(id).value; });
@@ -191,6 +192,7 @@ function clearSettings() {
   $('baseUrl').value = 'http://127.0.0.1:8000/v1';
   $('apiKey').value = '';
   $('modelName').value = 'omlx-model';
+  $('context').value = '8192';
   $('fileName').value = 'script.txt';
   $('chunkSize').value = '';
   updateDraftMetrics();
@@ -198,7 +200,7 @@ function clearSettings() {
 }
 function termsToObject() { const result={}; document.querySelectorAll('.term-row').forEach(row => { const a=row.querySelector('.term-source').value.trim(), b=row.querySelector('.term-target').value.trim(); if(a&&b) result[a]=b; }); return result; }
 function addTerm(source='', target='') { const row=document.createElement('div'); row.className='term-row'; row.innerHTML=`<input class="term-source" placeholder="원어" value="${esc(source)}"><input class="term-target" placeholder="고정 번역어" value="${esc(target)}"><button class="remove-term" title="삭제">×</button>`; row.querySelector('button').onclick=()=>row.remove(); $('terms').appendChild(row); }
-function updateDraftMetrics() { $('scriptChars').textContent=Number($('script').value.length).toLocaleString(); $('modelPill').textContent=`${$('modelName').value||'model'}`; }
+function updateDraftMetrics() { $('scriptChars').textContent=Number($('script').value.length).toLocaleString(); $('scriptContext').innerHTML=`${Number($('context').value||8192).toLocaleString()}<em>tok</em>`; $('modelPill').textContent=`${$('modelName').value||'model'} · ${Math.round(($('context').value||8192)/1024)}K`; }
 function renderChunks() {
   if(!project) return;
   const done=project.translations.filter(x=>x&&x.trim()).length, total=project.chunks.length, pct=total?Math.round(done/total*100):0;
@@ -206,7 +208,7 @@ function renderChunks() {
   $('chunks').innerHTML=project.chunks.map((chunk,i)=>`<article class="chunk" id="chunk-${i}"><div class="chunk-head"><div class="chunk-label"><span class="chunk-index">${String(i+1).padStart(2,'0')}</span><span>번역 단위 ${i+1}</span></div><span class="chunk-status">${project.translations[i]?'완료':'대기'}</span></div><div class="chunk-body"><div class="chunk-col"><small>ORIGINAL</small><pre>${esc(chunk)}</pre></div><div class="chunk-col"><small>TRANSLATION</small><pre class="translated" id="translation-${i}">${esc(project.translations[i]||'번역 결과가 아직 없습니다.')}</pre></div></div><div class="chunk-footer"><button class="mini-btn" onclick="retranslate(${i})" ${project.running?'disabled':''}>${project.translations[i]?'부분 재번역':'부분 번역'}</button></div></article>`).join('');
 }
 async function createProject() {
-  const body={script:$('script').value,file_name:$('fileName').value,base_url:$('baseUrl').value,api_key:$('apiKey').value,model_name:$('modelName').value,chunk_size:$('chunkSize').value?Number($('chunkSize').value):null,persona:{tone:$('tone').value,relationship:$('relationship').value,situation:$('situation').value,key_rules:$('keyRules').value.split('\n').map(x=>x.trim()).filter(Boolean)},glossary:termsToObject()};
+  const body={script:$('script').value,file_name:$('fileName').value,base_url:$('baseUrl').value,api_key:$('apiKey').value,model_name:$('modelName').value,context_window:Number($('context').value||8192),chunk_size:$('chunkSize').value?Number($('chunkSize').value):null,persona:{tone:$('tone').value,relationship:$('relationship').value,situation:$('situation').value,key_rules:$('keyRules').value.split('\n').map(x=>x.trim()).filter(Boolean)},glossary:termsToObject()};
   if(!body.script.trim()) return toast('대본을 먼저 입력해 주세요.');
   const res=await fetch('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(!res.ok) return toast((await res.json()).detail||'프로젝트 생성 실패');
@@ -217,6 +219,7 @@ async function testConnection() {
   const data=await res.json();
   if(!res.ok)return toast(data.detail||'연결 테스트 실패');
   if(data.model_name)$('modelName').value=data.model_name;
+  if(data.context_window){$('context').value=String(data.context_window); toast(`연결 성공 · Context ${Number(data.context_window).toLocaleString()} 토큰`);}
   saveSettings();
   $('connection').textContent=`oMLX 연결됨 · ${data.models.length||1}개 모델`;
   toast(data.models.length?`연결 성공 · ${data.models.join(', ')}`:'연결 성공 · 모델 목록 응답 없음');
